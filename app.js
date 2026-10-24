@@ -1,0 +1,1384 @@
+'use strict';
+/* مكتبة رفّ — قارئ PDF عربي مع ملاحظات وكتابة بالقلم واستخراج نص وإحصائيات. */
+
+// ---------- Helpers ----------
+const $ = (s, r = document) => r.querySelector(s);
+const PROPS = new Set(['value', 'checked', 'disabled', 'hidden', 'textContent']);
+function el(tag, props, ...kids) {
+  const e = tag === 'svg' || tag === 'path' || tag === 'rect' || tag === 'text' || tag === 'line' || tag === 'g'
+    ? document.createElementNS('http://www.w3.org/2000/svg', tag) : document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.setAttribute('class', v);
+    else if (k === 'style') e.style.cssText = v;
+    else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2), v);
+    else if (PROPS.has(k)) e[k] = v;
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : String(c));
+  return e;
+}
+const ICONS = {
+  back: 'M9 6l6 6-6 6',
+  thumbs: 'M4 4h6v7H4zM14 4h6v7h-6zM4 15h6v5H4zM14 15h6v5h-6z',
+  bookmark: 'M6 3h12v18l-6-4-6 4z',
+  pen: 'M4 20l4-1 11-11-3-3L5 16zM14 6l3 3',
+  pencil: 'M4 20l3-1 10-10-2-2L5 17zM15 5l2-2 4 4-2 2',
+  marker: 'M9 15l-4 5h6l2-2M9 15l7-11 4 3-7 11z',
+  eraser: 'M16 3l5 5-11 11H5l-2-2zM9 9l6 6',
+  text: 'M5 5h14M12 5v14M8 19h8',
+  undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3',
+  redo: 'M15 14l5-5-5-5M20 9H10a6 6 0 000 12h3',
+  plus: 'M12 5v14M5 12h14',
+  trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13',
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  close: 'M6 6l12 12M18 6L6 18',
+  translate: 'M4 5h8M8 3v2M6 5c0 4 3 7 6 8M10 5c-1 4-3 7-6 8M13 21l4-9 4 9M14.5 18h5',
+  note: 'M5 3h11l3 3v15H5zM8 10h8M8 14h6',
+  underline: 'M7 4v6a5 5 0 0010 0V4M5 20h14',
+  copy: 'M8 8h12v12H8zM4 16V4h12',
+  scan: 'M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 9h8M8 12h8M8 15h5',
+  palette: 'M12 3a9 9 0 100 18c1.1 0 1.5-.8 1.5-1.6 0-1-.8-1.4-.8-2.4 0-.9.7-1.5 1.6-1.5H17a4 4 0 004-4c0-4.7-4-8.5-9-8.5zM7.5 11h.01M10 7.5h.01M14.5 7.5h.01',
+  upload: 'M12 16V4M7 9l5-5 5 5M4 20h16',
+  type: 'M3 7h18M3 12h18M3 17h10',
+  clear: 'M5 5l14 14M4 12a8 8 0 1016 0 8 8 0 10-16 0',
+};
+function icon(name, extra) {
+  const s = el('svg', { class: 'icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', style: extra || null });
+  s.append(el('path', { d: ICONS[name] }));
+  if (name === 'more') s.style.strokeWidth = '3.2';
+  return s;
+}
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const nf = new Intl.NumberFormat('ar-u-nu-latn');
+const fmt = (n) => nf.format(Math.round(n));
+const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+const later = new Map();
+function saveLater(key, fn, ms = 500) {
+  const prev = later.get(key); if (prev) clearTimeout(prev.t);
+  later.set(key, { fn, t: setTimeout(() => { later.delete(key); fn(); }, ms) });
+}
+/** ينفّذ كل الحفظ المؤجَّل فورًا (عند إخفاء التطبيق أو إغلاقه). */
+function flushLater() { const jobs = [...later.values()]; later.clear(); jobs.forEach((j) => { clearTimeout(j.t); j.fn(); }); }
+function toast(msg) {
+  document.querySelectorAll('.toast').forEach((t) => t.remove());
+  const t = el('div', { class: 'toast', role: 'status' }, msg);
+  document.body.append(t);
+  setTimeout(() => t.remove(), 2600);
+}
+const isArabic = (s) => (s.match(/[؀-ۿ]/g) || []).length > s.replace(/\s/g, '').length * 0.3;
+
+// ---------- Claude runtime capabilities (optional) ----------
+const caps = {};
+function cap(name) {
+  if (!(name in caps)) caps[name] = (window.claude && window.claude.use) ? window.claude.use(name).catch(() => null) : Promise.resolve(null);
+  return caps[name];
+}
+
+// ---------- Storage ----------
+// داخل Claude تُحفظ البيانات في حسابك (قاعدة بيانات التطبيق وملفاته)، فتبقى بعد إغلاق التطبيق وتظهر على أجهزتك الأخرى.
+// خارج Claude تُحفظ في IndexedDB في هذا المتصفح فقط. ملفات PDF تُنسخ دائمًا في IndexedDB لتُفتح بسرعة.
+const STORES = ['books', 'files', 'notes', 'marks', 'ink', 'ocr', 'daily', 'meta', 'shelves'];
+const MAX_ASSET = 20 * 1024 * 1024;
+const Local = {
+  db: null, ok: true, mem: new Map(),
+  async open() {
+    try {
+      this.db = await new Promise((res, rej) => {
+        const r = indexedDB.open('raff-library', 2);
+        r.onupgradeneeded = () => { for (const s of STORES) if (!r.result.objectStoreNames.contains(s)) r.result.createObjectStore(s); };
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+        r.onblocked = () => rej(new Error('blocked'));
+      });
+    } catch (e) { this.ok = false; }
+  },
+  m(s) { if (!this.mem.has(s)) this.mem.set(s, new Map()); return this.mem.get(s); },
+  req(s, mode, fn) {
+    return new Promise((res, rej) => {
+      const t = this.db.transaction(s, mode); const r = fn(t.objectStore(s));
+      t.oncomplete = () => res(r && r.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+    });
+  },
+  async get(s, k) { if (!this.ok) return this.m(s).get(k); try { return await this.req(s, 'readonly', (st) => st.get(k)); } catch { return undefined; } },
+  async all(s) { if (!this.ok) return [...this.m(s).values()]; try { return await this.req(s, 'readonly', (st) => st.getAll()); } catch { return []; } },
+  async keys(s) { if (!this.ok) return [...this.m(s).keys()]; try { return await this.req(s, 'readonly', (st) => st.getAllKeys()); } catch { return []; } },
+  async put(s, k, v) { if (!this.ok) { this.m(s).set(k, v); return; } await this.req(s, 'readwrite', (st) => st.put(v, k)); },
+  async del(s, k) { if (!this.ok) { this.m(s).delete(k); return; } await this.req(s, 'readwrite', (st) => st.delete(k)); },
+};
+const Cloud = {
+  ok: false, base: null, latest: new Map(), running: new Map(),
+  async init() {
+    try {
+      const [db, user] = await Promise.all([cap('db'), cap('user')]);
+      if (!db || !user) return false;
+      const id = await user.id();
+      if (!id) return false;
+      this.base = db.doc(`data/users/${id}/raff`);
+      await this.base.collection('meta').doc('settings').get();
+      this.ok = true;
+    } catch (e) { console.warn('cloud storage unavailable', e); this.ok = false; }
+    return this.ok;
+  },
+  ref(s, k) { return this.base.collection(s).doc(String(k)); },
+  enc(v) { return JSON.parse(JSON.stringify(Array.isArray(v) ? { isList: true, list: v } : v)); },
+  dec(d) { return d && d.isList ? d.list : d; },
+  async get(s, k) { const d = await this.ref(s, k).get(); return d.exists ? this.dec(d.data()) : undefined; },
+  async all(s) { const q = await this.base.collection(s).get(); return q.docs.map((d) => this.dec(d.data())); },
+  async keys(s) { const q = await this.base.collection(s).get(); return q.docs.map((d) => d.id); },
+  put(s, k, v) { const body = this.enc(v); return this.queue(`${s}/${k}`, () => this.ref(s, k).set(body)); },
+  del(s, k) { return this.queue(`${s}/${k}`, () => this.ref(s, k).delete()); },
+  // كتابة واحدة في كل مرة لكل مستند، ويُكتفى بآخر قيمة إن تراكمت التعديلات.
+  queue(key, job) {
+    this.latest.set(key, job);
+    if (this.running.has(key)) return this.running.get(key);
+    const p = (async () => {
+      try {
+        while (this.latest.has(key)) {
+          const j = this.latest.get(key); this.latest.delete(key);
+          try { await j(); } catch (e) {
+            if (e?.code !== 'unavailable') throw e;
+            await new Promise((r) => setTimeout(r, 700 + Math.random() * 800));
+            await j();
+          }
+        }
+      } finally { this.running.delete(key); }
+    })();
+    this.running.set(key, p);
+    return p;
+  },
+};
+// كتابة القلم تُضغط في نص قصير حتى تتسع الصفحة الواحدة لآلاف النقاط.
+const packInk = (strokes) => (strokes || []).map((k) => ({ t: k.t, c: k.c, w: k.w, d: k.p.map(([x, y, p]) => `${Math.round(x * 1e4)},${Math.round(y * 1e4)},${Math.round(p * 100)}`).join(' ') }));
+const unpackInk = (list) => (list || []).map((k) => typeof k.d !== 'string' ? k
+  : { t: k.t, c: k.c, w: k.w, p: k.d ? k.d.split(' ').map((q) => { const [x, y, p] = q.split(',').map(Number); return [x / 1e4, y / 1e4, p / 100]; }) : [] });
+const Store = {
+  pending: 0,
+  be(s) { return s === 'files' || !Cloud.ok ? Local : Cloud; },
+  async get(s, k) { try { const v = await this.be(s).get(s, k); return s === 'ink' && v ? unpackInk(v) : v; } catch { return undefined; } },
+  async all(s) { try { return await this.be(s).all(s); } catch { return []; } },
+  async keys(s) { try { return await this.be(s).keys(s); } catch { return []; } },
+  put(s, k, v, quiet) { if (s === 'ink' && Cloud.ok) v = packInk(v); return this.write(() => this.be(s).put(s, k, v), quiet); },
+  del(s, k, quiet) { return this.write(() => this.be(s).del(s, k), quiet); },
+  async write(fn, quiet) {
+    if (!quiet) { this.pending++; setSaveState('saving'); }
+    try { await fn(); } catch (e) {
+      console.error(e);
+      toast(e?.code === 'quota_exceeded' ? 'امتلأت مساحة الحفظ في حسابك. احذف كتبًا أو ملاحظات لا تحتاجها.'
+        : e?.code === 'invalid_argument' ? 'هذه الصفحة أكبر من أن تُحفظ دفعة واحدة. وزّع الكتابة على صفحة جديدة.'
+        : 'تعذّر الحفظ. تحقّق من الاتصال بالإنترنت.');
+    } finally { if (!quiet) { this.pending--; if (!this.pending) setSaveState('saved'); } }
+  },
+};
+function setSaveState(st) {
+  const n = $('#saveState'); if (!n) return;
+  n.dataset.state = st;
+  const where = Cloud.ok ? 'في حسابك' : Local.ok ? 'على هذا الجهاز' : '';
+  if (!where) n.textContent = 'الحفظ مؤقت: التخزين غير متاح';
+  else n.textContent = st === 'saving' ? 'جارٍ الحفظ…' : `حُفظ ${where} ${new Date().toLocaleTimeString('ar-u-nu-latn', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+// ---------- App state ----------
+const DEFAULTS = {
+  translateTo: 'en', ocrEngine: 'local', penOnly: true, readSize: 22, seeded: false,
+  pen: { tool: 'pen', color: '#1C2220', width: 3 }, lastColor: 'yellow',
+  shelf: 'all', allTheme: 'walnut', skin: 'auto',
+};
+const S = { books: [], shelves: [], notes: [], marks: [], customize: false, daily: {}, settings: structuredClone(DEFAULTS), view: 'library', noteId: null, notesTab: 'notebook', noteMode: 'type', noteQuery: '' };
+const bus = new EventTarget();
+const changed = (topic) => bus.dispatchEvent(new CustomEvent('change', { detail: topic }));
+const saveSettings = () => Store.put('meta', 'settings', S.settings);
+const saveBook = (b, quiet) => saveLater('book:' + b.id, () => Store.put('books', b.id, b, quiet), 400);
+// كتابة القلم في الدفتر تُحفظ في مستندات منفصلة لكل صفحة، والملاحظة نفسها تحمل النص فقط.
+const noteForSave = (n) => ({ ...n, pages: n.pages.map(({ strokes, ...p }) => p) });
+const saveNote = (n) => saveLater('note:' + n.id, () => Store.put('notes', n.id, noteForSave(n)), 500);
+const saveNoteInk = (pg) => saveLater('ink:np:' + pg.id, () => Store.put('ink', 'np:' + pg.id, pg.strokes || []), 300);
+const saveDaily = (d) => saveLater('daily:' + d.date, () => Store.put('daily', d.date, d, true), 15000);
+function todayRec() { const k = dayKey(); return (S.daily[k] ||= { date: k, sec: 0, pages: [], books: {} }); }
+
+// ---------- PDF ----------
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('vendor/pdf.worker.min.js', location.href).href;
+async function renderToCanvas(pdf, n, width, canvas) {
+  const page = await pdf.getPage(n);
+  const vp1 = page.getViewport({ scale: 1 });
+  const vp = page.getViewport({ scale: width / vp1.width });
+  canvas = canvas || document.createElement('canvas');
+  canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  return canvas;
+}
+async function addBook(file, title) {
+  const buf = await file.arrayBuffer();
+  let pdf;
+  try { pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise; } catch { toast(`«${file.name}» ليس ملف PDF صالحًا.`); return; }
+  const c = await renderToCanvas(pdf, 1, 360);
+  const book = {
+    id: uid(), title: title || file.name.replace(/\.pdf$/i, ''), pages: pdf.numPages, cover: c.toDataURL('image/jpeg', 0.8),
+    added: Date.now(), lastOpened: 0, lastPage: 1, seen: [], bookmarks: [], secs: 0, size: buf.byteLength,
+    shelf: S.settings.shelf !== 'all' && S.shelves.some((x) => x.id === S.settings.shelf) ? S.settings.shelf : null,
+  };
+  pdf.destroy();
+  S.books.push(book);
+  changed('books');
+  await Store.write(() => storeBookFile(book, buf));
+  await Store.put('books', book.id, book);
+  changed('books');
+  return book;
+}
+/** ينسخ الملف في هذا الجهاز، ويرفعه إلى حسابك إن كان 20 م.ب أو أقل. */
+async function storeBookFile(book, buf) {
+  await Local.put('files', book.id, buf);
+  book.localOnly = true;
+  if (!Cloud.ok) return;
+  if (buf.byteLength > MAX_ASSET) { toast(`«${book.title}» أكبر من 20 م.ب، فحُفظ ملفه على هذا الجهاز فقط.`); return; }
+  const assets = await cap('assets');
+  if (!assets) return;
+  try {
+    const r = await assets.upload(new Blob([buf], { type: 'application/pdf' }), { type: 'application/pdf' });
+    book.assetId = r.id; book.localOnly = false;
+  } catch (e) {
+    console.error(e);
+    toast(`تعذّر رفع «${book.title}» إلى حسابك، فحُفظ على هذا الجهاز فقط.`);
+  }
+}
+async function loadBookFile(book) {
+  const cached = await Local.get('files', book.id);
+  if (cached) return cached;
+  if (!book.assetId) return null;
+  try {
+    const res = await fetch('/_blob/' + book.assetId);
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    Local.put('files', book.id, buf.slice(0)).catch(() => {});
+    return buf;
+  } catch { return null; }
+}
+async function deleteBook(id) {
+  const book = S.books.find((b) => b.id === id);
+  if (book?.assetId) cap('assets').then((a) => a?.delete(book.assetId)).catch(() => {});
+  S.books = S.books.filter((b) => b.id !== id);
+  const gone = S.marks.filter((m) => m.bookId === id);
+  S.marks = S.marks.filter((m) => m.bookId !== id);
+  await Store.del('books', id); await Local.del('files', id).catch(() => {});
+  for (const m of gone) await Store.del('marks', m.id);
+  for (const s of ['ink', 'ocr']) for (const k of await Store.keys(s)) if (String(k).startsWith(id + ':')) await Store.del(s, k);
+  changed('books');
+}
+
+// ---------- Ink (Apple Pencil) ----------
+class Ink {
+  constructor(host, { onCommit, onStart, blend } = {}) {
+    this.host = host; host.classList.add('ink-layer');
+    if (blend === false) host.style.mixBlendMode = 'normal';
+    this.base = el('canvas'); this.live = el('canvas'); host.append(this.base, this.live);
+    this.strokes = []; this.undoS = []; this.redoS = []; this.enabled = false; this.w = 0; this.h = 0; this.dpr = 1;
+    this.onCommit = onCommit; this.onStart = onStart;
+    host.addEventListener('pointerdown', (e) => this.down(e));
+    host.addEventListener('pointermove', (e) => this.move(e));
+    host.addEventListener('pointerup', (e) => this.up(e));
+    host.addEventListener('pointercancel', (e) => this.up(e));
+    host.addEventListener('touchmove', (e) => { if (this.pid != null) e.preventDefault(); }, { passive: false });
+  }
+  setEnabled(b) { this.enabled = b; this.host.classList.toggle('active', b); }
+  load(strokes) { this.strokes = strokes || []; this.undoS = []; this.redoS = []; this.draw(); }
+  resize() {
+    const r = this.host.getBoundingClientRect(); if (!r.width) return;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2); this.w = r.width; this.h = r.height;
+    for (const c of [this.base, this.live]) { c.width = Math.round(r.width * this.dpr); c.height = Math.round(r.height * this.dpr); }
+    this.draw();
+  }
+  pt(e) {
+    const r = this.host.getBoundingClientRect();
+    const p = e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5;
+    return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, p];
+  }
+  down(e) {
+    if (!this.enabled || e.button > 0) return;
+    if (e.pointerType === 'touch' && S.settings.penOnly) return; // رفض راحة اليد: الإصبع لا يرسم
+    e.preventDefault(); e.stopPropagation();
+    try { this.host.setPointerCapture(e.pointerId); } catch {}
+    this.pid = e.pointerId; if (!this.w) this.resize();
+    this.onStart && this.onStart(this);
+    const p = S.settings.pen;
+    if (p.tool === 'eraser') { this.erasing = []; this.eraseAt(this.pt(e)); return; }
+    this.cur = { t: p.tool, c: p.color, w: p.width, p: [this.pt(e)] };
+    this.drawLive();
+  }
+  move(e) {
+    if (e.pointerId !== this.pid) return;
+    e.preventDefault(); e.stopPropagation();
+    const evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+    for (const ev of evs.length ? evs : [e]) { const q = this.pt(ev); if (this.erasing) this.eraseAt(q); else if (this.cur) this.cur.p.push(q); }
+    if (this.cur) this.drawLive();
+  }
+  up(e) {
+    if (e.pointerId !== this.pid) return; this.pid = null;
+    if (this.erasing) { if (this.erasing.length) { this.undoS.push({ type: 'erase', items: this.erasing }); this.redoS = []; this.commit(); } this.erasing = null; return; }
+    if (!this.cur) return;
+    const s = this.cur; this.cur = null;
+    s.p = s.p.map(([x, y, p]) => [+x.toFixed(4), +y.toFixed(4), +p.toFixed(2)]);
+    this.strokes.push(s); this.undoS.push({ type: 'add', stroke: s }); this.redoS = [];
+    this.live.getContext('2d').clearRect(0, 0, this.live.width, this.live.height);
+    this.stroke(this.base.getContext('2d'), s);
+    this.commit();
+  }
+  eraseAt([x, y]) {
+    let hit = false;
+    for (let i = this.strokes.length - 1; i >= 0; i--) {
+      const s = this.strokes[i];
+      if (s.p.some(([px, py]) => Math.hypot((px - x) * this.w, (py - y) * this.h) < 14)) { this.erasing.push({ stroke: s, index: i }); this.strokes.splice(i, 1); hit = true; }
+    }
+    if (hit) this.draw();
+  }
+  undo() {
+    const op = this.undoS.pop(); if (!op) return;
+    if (op.type === 'add') this.strokes.splice(this.strokes.lastIndexOf(op.stroke), 1);
+    else if (op.type === 'erase') [...op.items].sort((a, b) => a.index - b.index).forEach((it) => this.strokes.splice(it.index, 0, it.stroke));
+    else if (op.type === 'clear') this.strokes = op.prev.slice();
+    this.redoS.push(op); this.draw(); this.commit();
+  }
+  redo() {
+    const op = this.redoS.pop(); if (!op) return;
+    if (op.type === 'add') this.strokes.push(op.stroke);
+    else if (op.type === 'erase') op.items.forEach((it) => { const i = this.strokes.indexOf(it.stroke); if (i >= 0) this.strokes.splice(i, 1); });
+    else if (op.type === 'clear') this.strokes = [];
+    this.undoS.push(op); this.draw(); this.commit();
+  }
+  clear() { if (!this.strokes.length) return; this.undoS.push({ type: 'clear', prev: this.strokes.slice() }); this.strokes = []; this.redoS = []; this.draw(); this.commit(); }
+  commit() { this.onCommit && this.onCommit(this.strokes); }
+  draw() { const c = this.base.getContext('2d'); c.clearRect(0, 0, this.base.width, this.base.height); for (const s of this.strokes) this.stroke(c, s); }
+  drawLive() { const c = this.live.getContext('2d'); c.clearRect(0, 0, this.live.width, this.live.height); this.stroke(c, this.cur); }
+  stroke(ctx, s) {
+    if (!this.w) return;
+    const W = this.w * this.dpr, H = this.h * this.dpr, lw = s.w * (this.w / 800) * this.dpr;
+    const P = s.p.map(([x, y, p]) => [x * W, y * H, p]);
+    ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = s.c; ctx.fillStyle = s.c;
+    if (s.t === 'marker') {
+      ctx.globalAlpha = 0.33; ctx.lineWidth = lw * 5; ctx.lineCap = 'square';
+      ctx.beginPath(); ctx.moveTo(P[0][0], P[0][1]);
+      for (let i = 1; i < P.length; i++) { const m = [(P[i - 1][0] + P[i][0]) / 2, (P[i - 1][1] + P[i][1]) / 2]; ctx.quadraticCurveTo(P[i - 1][0], P[i - 1][1], m[0], m[1]); }
+      if (P.length > 1) ctx.lineTo(P.at(-1)[0], P.at(-1)[1]); else ctx.lineTo(P[0][0] + 0.1, P[0][1]);
+      ctx.stroke();
+    } else {
+      const k = s.t === 'pencil' ? 0.7 : 1; ctx.globalAlpha = s.t === 'pencil' ? 0.72 : 1;
+      if (P.length === 1) { ctx.beginPath(); ctx.arc(P[0][0], P[0][1], lw * k * 0.6, 0, Math.PI * 2); ctx.fill(); }
+      let prev = P[0], prevMid = P[0];
+      for (let i = 1; i < P.length; i++) {
+        const cur = P[i], mid = [(prev[0] + cur[0]) / 2, (prev[1] + cur[1]) / 2];
+        ctx.beginPath(); ctx.moveTo(prevMid[0], prevMid[1]); ctx.quadraticCurveTo(prev[0], prev[1], mid[0], mid[1]);
+        ctx.lineWidth = Math.max(0.6, lw * k * (0.35 + ((prev[2] + cur[2]) / 2) * 1.1)); ctx.stroke();
+        prevMid = mid; prev = cur;
+      }
+      if (P.length > 1) { ctx.beginPath(); ctx.moveTo(prevMid[0], prevMid[1]); ctx.lineTo(prev[0], prev[1]); ctx.stroke(); }
+    }
+    ctx.restore();
+  }
+}
+
+const PEN_COLORS = ['#1C2220', '#2C6FB8', '#B3362F', '#1E6A64', '#F2C230', '#F07AA5'];
+const PEN_WIDTHS = [2, 3.5, 7];
+const TOOL_NAMES = { pen: 'قلم حبر', pencil: 'قلم رصاص', marker: 'قلم تظليل', eraser: 'ممحاة' };
+function penBar(getInk, extra) {
+  const bar = el('div', { class: 'pen-bar', role: 'toolbar', 'aria-label': 'أدوات القلم' });
+  const render = () => {
+    const p = S.settings.pen;
+    bar.replaceChildren(
+      ...Object.keys(TOOL_NAMES).map((t) => el('button', { class: 'icon-btn', title: TOOL_NAMES[t], 'aria-label': TOOL_NAMES[t], 'aria-pressed': String(p.tool === t), onclick: () => { p.tool = t; if (t === 'marker' && !['#F2C230', '#F07AA5'].includes(p.color)) p.color = '#F2C230'; saveSettings(); render(); } }, icon(t))),
+      el('span', { class: 'sep' }),
+      ...PEN_COLORS.map((c) => el('button', { class: 'swatch', style: `background:${c}`, 'aria-label': 'لون', 'aria-pressed': String(p.color === c), onclick: () => { p.color = c; if (p.tool === 'eraser') p.tool = 'pen'; saveSettings(); render(); } })),
+      el('span', { class: 'sep' }),
+      ...PEN_WIDTHS.map((w) => el('button', { class: 'width-dot', 'aria-label': 'السماكة', 'aria-pressed': String(p.width === w), onclick: () => { p.width = w; saveSettings(); render(); } }, el('i', { style: `width:${w * 2 + 2}px;height:${w * 2 + 2}px` }))),
+      el('span', { class: 'sep' }),
+      el('button', { class: 'icon-btn', title: 'تراجع', 'aria-label': 'تراجع', onclick: () => getInk()?.undo() }, icon('undo')),
+      el('button', { class: 'icon-btn', title: 'إعادة', 'aria-label': 'إعادة', onclick: () => getInk()?.redo() }, icon('redo')),
+      el('button', { class: 'icon-btn', title: 'مسح الصفحة', 'aria-label': 'مسح الصفحة', onclick: () => { getInk()?.clear(); toast('مُسحت الكتابة. اضغط «تراجع» لاستعادتها.'); } }, icon('clear')),
+      el('button', { class: 'toggle-chip', 'aria-pressed': String(S.settings.penOnly), title: 'عند التفعيل لا يرسم إلا Apple Pencil، والإصبع يقلب الصفحات', onclick: () => { S.settings.penOnly = !S.settings.penOnly; saveSettings(); render(); } }, 'القلم فقط'),
+      ...(extra ? [extra] : []),
+    );
+  };
+  render();
+  return bar;
+}
+
+// ---------- Rail / views ----------
+const main = $('#main');
+document.querySelectorAll('.rail-btn').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
+function showView(v) {
+  S.view = v;
+  document.querySelectorAll('.rail-btn').forEach((b) => b.setAttribute('aria-current', b.dataset.view === v ? 'page' : 'false'));
+  ({ library: renderLibrary, notes: renderNotes, stats: renderStats, settings: renderSettings })[v]();
+}
+bus.addEventListener('change', debounce((e) => {
+  if ($('#reader').hidden === false && S.view !== 'stats') return;
+  if (S.view === 'stats') renderStats();
+  else if (S.view === 'library' && ['books', 'pages'].includes(e.detail)) renderLibrary();
+}, 120));
+
+// ---------- Shelves and themes ----------
+const SHELF_THEMES = {
+  walnut: { name: 'جوز', back: '#E6DED3', hi: '#8A6142', board: '#5B3F2C', lo: '#3B281B', ink: '#2A1F17', grain: true },
+  oak: { name: 'بلوط', back: '#EFE5D2', hi: '#CDA66C', board: '#A67C45', lo: '#76552C', ink: '#2B2116', grain: true },
+  maple: { name: 'قيقب فاتح', back: '#F7F2E8', hi: '#EBD3A8', board: '#D6B582', lo: '#B08F5A', ink: '#2B2116', grain: true },
+  ebony: { name: 'أبنوس', back: '#2B2624', hi: '#5A4C43', board: '#2E2420', lo: '#120D0B', ink: '#EEE7DE', grain: true },
+  green: { name: 'مكتبة خضراء', back: '#1F4A43', hi: '#9A7550', board: '#6B4A30', lo: '#3E2A1D', ink: '#EAF2EE', grain: true },
+  white: { name: 'أبيض حديث', back: '#F3F4F2', hi: '#FFFFFF', board: '#DEE1DC', lo: '#B9BDB6', ink: '#1C2220', grain: false },
+  glass: { name: 'زجاج', back: '#E3EEEE', hi: 'rgba(255,255,255,.95)', board: 'rgba(186,212,211,.9)', lo: 'rgba(110,150,150,.75)', ink: '#1C2A28', grain: false },
+};
+const SKINS = [['auto', 'تلقائي'], ['light', 'فاتح'], ['sepia', 'ورقي'], ['dark', 'داكن']];
+function shelfVars(key) {
+  const t = SHELF_THEMES[key] || SHELF_THEMES.walnut;
+  return `--sh-back:${t.back};--sh-hi:${t.hi};--sh-board:${t.board};--sh-lo:${t.lo};--sh-ink:${t.ink};--sh-grain:${t.grain ? 'var(--grain)' : 'none'}`;
+}
+function applySkin() {
+  const k = S.settings.skin;
+  if (k && k !== 'auto') document.documentElement.dataset.skin = k;
+  else delete document.documentElement.dataset.skin;
+}
+const isInstalled = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const currentShelf = () => S.shelves.find((x) => x.id === S.settings.shelf) || null;
+const shelfBooks = (id) => S.books.filter((b) => b.shelf === id);
+function selectShelf(id) { S.settings.shelf = id; saveSettings(); S.customize = false; renderLibrary(); }
+function addShelf(name) {
+  const used = new Set(S.shelves.map((x) => x.theme));
+  const theme = Object.keys(SHELF_THEMES).find((k) => !used.has(k)) || 'walnut';
+  const sh = { id: uid(), name, theme, created: Date.now() };
+  S.shelves.push(sh); Store.put('shelves', sh.id, sh);
+  selectShelf(sh.id);
+  toast(`أُنشئ رف «${name}». الكتب التي تضيفها الآن تذهب إليه.`);
+}
+function deleteShelf(sh) {
+  S.shelves = S.shelves.filter((x) => x.id !== sh.id);
+  Store.del('shelves', sh.id);
+  for (const b of shelfBooks(sh.id)) { b.shelf = null; saveBook(b); }
+  selectShelf('all');
+  toast(`حُذف رف «${sh.name}». كتبه باقية في «كل الكتب».`);
+}
+function moveBook(b, shelfId) {
+  b.shelf = shelfId; saveBook(b); closeMenu(); renderLibrary();
+  const sh = S.shelves.find((x) => x.id === shelfId);
+  toast(sh ? `نُقل «${b.title}» إلى رف «${sh.name}».` : `أُخرج «${b.title}» من رفّه.`);
+}
+
+// ---------- Library ----------
+let openMenu = null, addingShelf = false;
+const bookCount = (n) => n === 0 ? 'لا كتب' : n === 1 ? 'كتاب واحد' : n === 2 ? 'كتابان' : n <= 10 ? `${fmt(n)} كتب` : `${fmt(n)} كتابًا`;
+function renderLibrary() {
+  if (S.settings.shelf !== 'all' && !currentShelf()) S.settings.shelf = 'all';
+  const shelf = currentShelf();
+  const themeKey = shelf ? shelf.theme : S.settings.allTheme;
+  const sorted = [...S.books].sort((a, b) => (b.lastOpened || b.added) - (a.lastOpened || a.added));
+  const books = shelf ? sorted.filter((b) => b.shelf === shelf.id) : sorted;
+
+  const chip = (id, name, n, theme) => el('button', { class: 'shelf-chip', role: 'tab', 'aria-selected': String(S.settings.shelf === id), onclick: () => selectShelf(id) },
+    el('i', { class: 'sw', style: shelfVars(theme) }), name, el('span', { class: 'n num' }, fmt(n)));
+  const tabs = el('div', { class: 'shelf-tabs', role: 'tablist', 'aria-label': 'الرفوف' },
+    chip('all', 'كل الكتب', S.books.length, S.settings.allTheme),
+    ...S.shelves.map((x) => chip(x.id, x.name, shelfBooks(x.id).length, x.theme)));
+  if (addingShelf) {
+    const inp = el('input', { class: 'input shelf-name-in', placeholder: 'اسم الرف، مثل: دراسة', 'aria-label': 'اسم الرف الجديد', id: 'newShelfName' });
+    const done = () => { const v = inp.value.trim(); addingShelf = false; if (v) addShelf(v); else renderLibrary(); };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(); if (e.key === 'Escape') { addingShelf = false; renderLibrary(); } });
+    tabs.append(inp, el('button', { class: 'btn primary', onclick: done }, 'إنشاء'));
+    setTimeout(() => inp.focus(), 0);
+  } else {
+    tabs.append(el('button', { class: 'shelf-chip add', onclick: () => { addingShelf = true; renderLibrary(); } }, icon('plus'), 'رف جديد'));
+  }
+
+  const view = el('div', { class: 'view' }, el('div', { class: 'view-inner' },
+    el('div', { class: 'view-head' },
+      el('div', {}, el('h1', {}, shelf ? shelf.name : 'المكتبة'), el('div', { class: 'sub' }, `${bookCount(books.length)} على ${shelf ? 'هذا الرف' : 'الرفوف'}`)),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn', 'aria-pressed': String(S.customize), onclick: () => { S.customize = !S.customize; renderLibrary(); } }, icon('palette'), 'تخصيص'),
+        el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, icon('upload'), 'إضافة ملف PDF'))),
+    Cloud.ok || isInstalled() ? null : el('div', { class: 'notice' }, 'لتثبيت «رفّ» على iPad: اضغط زر المشاركة في Safari ثم «إضافة إلى الشاشة الرئيسية». يفتح بعدها مباشرة بملء الشاشة، ويعمل دون إنترنت، وتبقى مكتبتك محفوظة على الجهاز.'),
+    tabs,
+    S.customize ? customizePanel(shelf, themeKey) : null,
+    books.length ? el('div', { class: 'shelf', style: shelfVars(themeKey) }, books.map(bookCard))
+      : el('div', { class: 'shelf empty-shelf', style: shelfVars(themeKey) },
+          el('p', {}, shelf ? 'هذا الرف فارغ. أضف ملف PDF إليه، أو انقل كتابًا من قائمة ⋯ تحت غلافه.' : 'لا توجد كتب بعد.'),
+          el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, 'إضافة ملف PDF')),
+    el('div', { class: 'drop-hint' }, 'اسحب ملفات PDF إلى هنا، أو اخترها من تطبيق «الملفات» على iPad عبر زر «إضافة ملف PDF».'),
+  ));
+  const keep = main.querySelector('.view')?.scrollTop || 0;
+  main.replaceChildren(view); view.scrollTop = keep;
+}
+function customizePanel(shelf, themeKey) {
+  const setTheme = (k) => {
+    if (shelf) { shelf.theme = k; Store.put('shelves', shelf.id, shelf); } else { S.settings.allTheme = k; saveSettings(); }
+    renderLibrary();
+  };
+  const panel = el('div', { class: 'customize' });
+  if (shelf) {
+    const name = el('input', { class: 'input', value: shelf.name, 'aria-label': 'اسم الرف', id: 'shelfName' });
+    name.addEventListener('change', () => { const v = name.value.trim(); if (v) { shelf.name = v; Store.put('shelves', shelf.id, shelf); renderLibrary(); } });
+    panel.append(el('div', { class: 'cz-row' }, el('b', {}, 'اسم الرف'), name));
+  }
+  panel.append(
+    el('div', { class: 'cz-row' }, el('b', {}, shelf ? 'شكل هذا الرف' : 'شكل رف «كل الكتب»'),
+      el('div', { class: 'theme-grid' }, ...Object.entries(SHELF_THEMES).map(([k, t]) => el('button', { class: 'theme-opt', 'aria-pressed': String(themeKey === k), onclick: () => setTheme(k) },
+        el('span', { class: 'theme-prev', style: shelfVars(k) }, el('i'), el('i'), el('i')), t.name)))),
+    el('div', { class: 'cz-row' }, el('b', {}, 'مظهر التطبيق'),
+      el('div', { class: 'seg' }, ...SKINS.map(([k, l]) => el('button', { 'aria-pressed': String(S.settings.skin === k), onclick: () => { S.settings.skin = k; saveSettings(); applySkin(); renderLibrary(); } }, l)))));
+  if (shelf) {
+    let armed = false;
+    const del = el('button', { class: 'btn ghost danger', onclick: () => {
+      if (!armed) { armed = true; del.lastChild.textContent = 'اضغط مرة أخرى لحذف الرف'; setTimeout(() => { armed = false; if (del.isConnected) del.lastChild.textContent = 'حذف الرف'; }, 3000); return; }
+      deleteShelf(shelf);
+    } }, icon('trash'), el('span', {}, 'حذف الرف'));
+    panel.append(el('div', { class: 'cz-row' }, el('span', { class: 'muted' }, 'حذف الرف لا يحذف كتبه، بل تبقى في «كل الكتب».'), del));
+  }
+  return panel;
+}
+function bookCard(b) {
+  const pct = b.pages ? Math.round((b.seen.length / b.pages) * 100) : 0;
+  const card = el('div', { class: 'book' });
+  const more = el('button', { class: 'icon-btn more', 'aria-label': 'خيارات الكتاب', onclick: (e) => { e.stopPropagation(); toggleMenu(card, b); } }, icon('more'));
+  card.append(
+    el('button', { class: 'cover-btn', 'aria-label': `فتح ${b.title}`, onclick: () => openReader(b.id) }, el('img', { class: 'cover', src: b.cover, alt: '' })),
+    el('div', { class: 'book-progress', title: `${pct}%` }, el('i', { style: `width:${pct}%` })),
+    el('div', { class: 'book-meta' }, el('div', { class: 'book-title', title: b.title }, b.title), more),
+  );
+  if (b.localOnly && Cloud.ok) card.append(el('span', { class: 'local-badge', title: 'ملف هذا الكتاب محفوظ على هذا الجهاز فقط' }, 'على هذا الجهاز'));
+  return card;
+}
+function toggleMenu(card, b) {
+  if (openMenu) { const was = openMenu.parentNode === card; openMenu.remove(); openMenu = null; if (was) return; }
+  const m = el('div', { class: 'menu', role: 'menu' });
+  const base = () => m.replaceChildren(
+    el('div', { class: 'muted', style: 'padding:6px 12px;font-size:13px' }, `${fmt(b.pages)} صفحة · ${Math.round((b.secs || 0) / 60)} دقيقة قراءة`),
+    el('button', { role: 'menuitem', onclick: () => rename() }, icon('pen'), 'إعادة التسمية'),
+    el('button', { role: 'menuitem', onclick: () => moveMenu() }, icon('thumbs'), 'نقل إلى رف'),
+    el('button', { role: 'menuitem', class: 'btn danger', style: 'border:0', onclick: () => confirmDel() }, icon('trash'), 'حذف من المكتبة'),
+  );
+  const rename = () => {
+    const inp = el('input', { class: 'input', value: b.title, 'aria-label': 'العنوان الجديد' });
+    const done = () => { const v = inp.value.trim(); if (v) { b.title = v; saveBook(b); changed('books'); } closeMenu(); };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(); if (e.key === 'Escape') closeMenu(); });
+    m.replaceChildren(inp, el('button', { onclick: done }, 'حفظ'));
+    setTimeout(() => inp.focus(), 0);
+  };
+  const moveMenu = () => m.replaceChildren(...[
+    el('div', { class: 'muted', style: 'padding:6px 12px;font-size:13px' }, 'اختر الرف'),
+    ...S.shelves.map((x) => el('button', { role: 'menuitemradio', 'aria-checked': String(b.shelf === x.id), onclick: () => moveBook(b, x.id) },
+      el('i', { class: 'sw', style: shelfVars(x.theme) }), x.name, b.shelf === x.id ? ' ✓' : '')),
+    S.shelves.length ? null : el('div', { class: 'confirm' }, 'لا توجد رفوف بعد. أنشئ رفًا من زر «رف جديد» أعلى المكتبة.'),
+    b.shelf ? el('button', { onclick: () => moveBook(b, null) }, 'إخراجه من الرف') : null,
+    el('button', { onclick: base }, 'رجوع'),
+  ].filter(Boolean));
+  const confirmDel = () => m.replaceChildren(
+    el('div', { class: 'confirm' }, 'سيُحذف الكتاب مع تظليلاته وكتابة القلم عليه.'),
+    el('button', { class: 'danger', style: 'color:var(--danger)', onclick: async () => { closeMenu(); await deleteBook(b.id); toast('حُذف الكتاب.'); } }, icon('trash'), 'نعم، احذف'),
+    el('button', { onclick: base }, 'إلغاء'),
+  );
+  base(); card.append(m); openMenu = m;
+}
+function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
+document.addEventListener('pointerdown', (e) => { if (openMenu && !openMenu.contains(e.target) && !e.target.closest('.more')) closeMenu(); });
+
+$('#fileIn').addEventListener('change', async (e) => {
+  const files = [...e.target.files]; e.target.value = '';
+  await importFiles(files);
+});
+async function importFiles(files) {
+  const pdfs = files.filter((f) => /pdf$/i.test(f.type) || /\.pdf$/i.test(f.name));
+  if (!pdfs.length) return;
+  toast(`جارٍ إضافة ${fmt(pdfs.length)} ملف…`);
+  let last;
+  for (const f of pdfs) last = (await addBook(f)) || last;
+  if (last) toast(pdfs.length === 1 ? `أُضيف «${last.title}» إلى الرف.` : 'أُضيفت الملفات إلى الرف.');
+}
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => { e.preventDefault(); importFiles([...(e.dataTransfer?.files || [])]); });
+
+// ---------- Reader ----------
+const R = { book: null, pdf: null, page: 1, task: null, ink: null, panel: false, pen: false, thumbs: false, ocrBusy: false };
+const readerEl = $('#reader');
+const pageKey = (n = R.page) => `${R.book.id}:${n}`;
+
+async function openReader(id, page, withPanel) {
+  closeMenu();
+  const book = S.books.find((b) => b.id === id); if (!book) return;
+  if (!(await Local.get('files', id))) toast('جارٍ تحميل الكتاب من حسابك…');
+  const buf = await loadBookFile(book);
+  if (!buf) {
+    toast(book.localOnly ? 'ملف هذا الكتاب محفوظ على الجهاز الذي أُضيف منه فقط. أضِف الملف من جديد هنا.' : 'تعذّر تحميل ملف الكتاب. تحقّق من الاتصال بالإنترنت.');
+    return;
+  }
+  try { R.pdf = await pdfjsLib.getDocument({ data: buf }).promise; } catch { toast('تعذّر فتح الملف.'); return; }
+  R.book = book; R.pen = false; R.thumbs = false; R.panel = !!withPanel || R.panel;
+  book.lastOpened = Date.now(); saveBook(book);
+  buildReader();
+  readerEl.hidden = false;
+  await goto(page || book.lastPage || 1, 0);
+}
+function closeReader() {
+  hideSelBar();
+  readerEl.hidden = true; readerEl.replaceChildren();
+  if (R.pdf) R.pdf.destroy();
+  R.pdf = null; R.book = null; R.ink = null;
+  showView(S.view);
+}
+function buildReader() {
+  const b = R.book;
+  R.els = {};
+  const E = R.els;
+  E.pageNo = el('span', { class: 'r-pageno num' });
+  E.bmBtn = el('button', { class: 'icon-btn', title: 'علامة مرجعية', 'aria-label': 'علامة مرجعية', onclick: toggleBookmark }, icon('bookmark'));
+  E.penBtn = el('button', { class: 'icon-btn', title: 'الكتابة بالقلم', 'aria-label': 'الكتابة بالقلم', onclick: () => setPen(!R.pen) }, icon('pen'));
+  E.txtBtn = el('button', { class: 'icon-btn', title: 'النص المستخرج', 'aria-label': 'النص المستخرج', onclick: () => setPanel(!R.panel) }, icon('text'));
+  E.thBtn = el('button', { class: 'icon-btn', title: 'الصفحات', 'aria-label': 'الصفحات', onclick: () => setThumbs(!R.thumbs) }, icon('thumbs'));
+  const top = el('div', { class: 'r-top' },
+    el('button', { class: 'icon-btn', 'aria-label': 'العودة إلى المكتبة', title: 'المكتبة', onclick: closeReader }, icon('back')),
+    el('div', { class: 'r-title' }, b.title), E.pageNo, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn);
+  E.pdfCanvas = el('canvas', { class: 'pdf' });
+  E.inkHost = el('div');
+  E.flag = el('div', { class: 'bookmark-flag', hidden: true });
+  E.wrap = el('div', { class: 'page-wrap' }, E.pdfCanvas, E.inkHost, E.flag);
+  E.tapNext = el('button', { class: 'tap-zone next', 'aria-label': 'الصفحة التالية', onclick: () => goto(R.page + 1, 1) });
+  E.tapPrev = el('button', { class: 'tap-zone prev', 'aria-label': 'الصفحة السابقة', onclick: () => goto(R.page - 1, -1) });
+  E.stage = el('div', { class: 'stage' }, E.wrap, E.tapNext, E.tapPrev);
+  E.penBar = penBar(() => R.ink); E.penBar.hidden = true; E.stage.append(E.penBar);
+  E.thumbs = el('div', { class: 'thumbs', hidden: true }); E.stage.append(E.thumbs);
+  E.panel = el('aside', { class: 'panel', 'aria-label': 'النص المستخرج' });
+  E.body = el('div', { class: 'r-body' }, E.stage, E.panel);
+  E.range = el('input', { type: 'range', min: 1, max: b.pages, value: 1, 'aria-label': 'الانتقال إلى صفحة', oninput: (e) => { E.pageNo.textContent = `${e.target.value} / ${b.pages}`; }, onchange: (e) => goto(+e.target.value, 0) });
+  E.pct = el('span', { class: 'muted num', style: 'font-size:13px;white-space:nowrap' });
+  const bottom = el('div', { class: 'r-bottom' }, E.range, E.pct);
+  readerEl.replaceChildren(top, E.body, bottom);
+
+  R.ink = new Ink(E.inkHost, {
+    onCommit: (strokes) => { const k = pageKey(); saveLater('ink:' + k, () => Store.put('ink', k, strokes.slice()), 300); changed('ink'); },
+  });
+  // سحب بالإصبع لقلب الصفحات: السحب نحو اليمين = الصفحة التالية (اتجاه الكتب العربية)
+  let sx = null, sy = 0;
+  E.stage.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch' || e.pointerType === 'mouse') { sx = e.clientX; sy = e.clientY; } });
+  E.stage.addEventListener('pointerup', (e) => {
+    if (sx == null) return; const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+    if (R.pen && e.pointerType !== 'touch') return;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) goto(R.page + (dx > 0 ? 1 : -1), dx > 0 ? 1 : -1);
+  });
+  new ResizeObserver(debounce(() => { if (R.book) renderPage(false); }, 120)).observe(E.stage);
+  setPanel(R.panel, true);
+}
+function setPen(on) {
+  R.pen = on; const E = R.els;
+  E.penBtn.setAttribute('aria-pressed', String(on));
+  E.penBar.hidden = !on; E.tapNext.hidden = on; E.tapPrev.hidden = on;
+  E.stage.classList.toggle('pen-on', on); renderPage(false);
+  R.ink.setEnabled(on);
+  if (on) setThumbs(false);
+}
+function setThumbs(on) {
+  R.thumbs = on; const E = R.els;
+  E.thBtn.setAttribute('aria-pressed', String(on)); E.thumbs.hidden = !on;
+  if (on) buildThumbs();
+}
+function setPanel(on, silent) {
+  R.panel = on; const E = R.els;
+  E.txtBtn.setAttribute('aria-pressed', String(on));
+  E.body.classList.toggle('with-panel', on); E.panel.hidden = !on;
+  if (!on) hideSelBar();
+  if (on && !silent) loadPanel();
+}
+function toggleBookmark() {
+  const b = R.book; const i = b.bookmarks.indexOf(R.page);
+  if (i >= 0) b.bookmarks.splice(i, 1); else b.bookmarks.push(R.page);
+  saveBook(b); updateChrome(); toast(i >= 0 ? 'أُزيلت العلامة.' : `وُضعت علامة على الصفحة ${R.page}.`);
+}
+function updateChrome() {
+  const E = R.els, b = R.book;
+  E.pageNo.textContent = `${R.page} / ${b.pages}`;
+  E.range.value = R.page;
+  E.pct.textContent = `قُرئ ${Math.round((b.seen.length / b.pages) * 100)}%`;
+  const bm = b.bookmarks.includes(R.page);
+  E.bmBtn.setAttribute('aria-pressed', String(bm)); E.flag.hidden = !bm;
+  E.thumbs.querySelectorAll('button').forEach((t) => t.setAttribute('aria-current', String(+t.dataset.page === R.page)));
+}
+let seenTimer;
+async function goto(n, dir) {
+  if (!R.book) return;
+  n = Math.max(1, Math.min(R.book.pages, n));
+  if (n === R.page && dir) return;
+  hideSelBar();
+  R.page = n; R.book.lastPage = n; saveBook(R.book, true);
+  updateChrome();
+  await renderPage(true, dir);
+  R.ink.load((await Store.get('ink', pageKey())) || []);
+  if (R.panel) loadPanel();
+  clearTimeout(seenTimer);
+  seenTimer = setTimeout(() => markSeen(n), 1500);
+}
+async function renderPage(fresh, dir) {
+  const E = R.els; if (!E || !R.pdf) return;
+  const page = await R.pdf.getPage(R.page);
+  const vp1 = page.getViewport({ scale: 1 });
+  const sr = E.stage.getBoundingClientRect();
+  const cs = getComputedStyle(E.stage);
+  const aw = sr.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const ah = sr.height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  if (aw <= 0 || ah <= 0) return;
+  const scale = Math.min(aw / vp1.width, ah / vp1.height);
+  const cw = Math.floor(vp1.width * scale), ch = Math.floor(vp1.height * scale);
+  E.wrap.style.width = cw + 'px'; E.wrap.style.height = ch + 'px';
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const vp = page.getViewport({ scale: scale * dpr });
+  if (R.task) { try { R.task.cancel(); } catch {} }
+  const off = document.createElement('canvas'); off.width = Math.round(vp.width); off.height = Math.round(vp.height);
+  R.task = page.render({ canvasContext: off.getContext('2d'), viewport: vp });
+  try { await R.task.promise; } catch { return; }
+  E.pdfCanvas.width = off.width; E.pdfCanvas.height = off.height;
+  E.pdfCanvas.getContext('2d').drawImage(off, 0, 0);
+  R.ink.resize();
+  if (fresh && dir) { E.wrap.classList.remove('turn-next', 'turn-prev'); void E.wrap.offsetWidth; E.wrap.classList.add(dir > 0 ? 'turn-next' : 'turn-prev'); }
+}
+function markSeen(n) {
+  if (!R.book || R.page !== n) return;
+  const b = R.book, d = todayRec(), key = `${b.id}:${n}`;
+  if (!b.seen.includes(n)) { b.seen.push(n); saveBook(b); }
+  if (!d.pages.includes(key)) { d.pages.push(key); saveDaily(d); }
+  updateChrome(); changed('pages');
+}
+const thumbCache = new Map();
+function buildThumbs() {
+  const E = R.els, b = R.book;
+  E.thumbs.replaceChildren();
+  const io = new IntersectionObserver((ents) => ents.forEach(async (en) => {
+    if (!en.isIntersecting) return; io.unobserve(en.target);
+    const n = +en.target.dataset.page, k = `${b.id}:${n}`;
+    if (!thumbCache.has(k)) { const c = await renderToCanvas(R.pdf, n, 110); thumbCache.set(k, c.toDataURL('image/jpeg', 0.7)); }
+    en.target.querySelector('img').src = thumbCache.get(k);
+  }), { root: E.thumbs });
+  for (let n = 1; n <= b.pages; n++) {
+    const t = el('button', { 'data-page': n, 'aria-label': `الصفحة ${n}`, 'aria-current': String(n === R.page), onclick: () => { goto(n, n > R.page ? 1 : -1); } },
+      el('img', { alt: '', src: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', style: 'width:92px;height:130px' }),
+      el('span', {}, b.bookmarks.includes(n) ? `◆ ${n}` : n));
+    E.thumbs.append(t); io.observe(t);
+  }
+  E.thumbs.querySelector('[aria-current="true"]')?.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+document.addEventListener('keydown', (e) => {
+  if (readerEl.hidden || /input|textarea/i.test(e.target.tagName)) return;
+  if (e.key === 'ArrowLeft') goto(R.page + 1, 1);
+  else if (e.key === 'ArrowRight') goto(R.page - 1, -1);
+  else if (e.key === 'Escape') { if ($('.sel-bar') || $('.pop')) hideSelBar(); else closeReader(); }
+  else if ((e.metaKey || e.ctrlKey) && e.key === 'z' && R.pen) { e.preventDefault(); e.shiftKey ? R.ink.redo() : R.ink.undo(); }
+});
+
+// ---------- Reading time ----------
+let lastAct = Date.now();
+['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach((ev) => addEventListener(ev, () => { lastAct = Date.now(); }, { capture: true, passive: true }));
+setInterval(() => {
+  if (!R.book || document.hidden || Date.now() - lastAct > 120000) return;
+  const d = todayRec(), b = R.book;
+  d.sec++; d.books[b.id] = (d.books[b.id] || 0) + 1; b.secs = (b.secs || 0) + 1;
+  saveDaily(d); saveBook(b, true);
+  if (d.sec % 10 === 0) changed('time');
+}, 1000);
+
+// ---------- Text panel: extraction (OCR) ----------
+async function loadPanel() {
+  const E = R.els, n = R.page; if (!E) return;
+  let rec = await Store.get('ocr', pageKey(n));
+  if (!rec) {
+    const paras = await nativeText(n);
+    if (paras) { rec = { paras, engine: 'pdf', at: Date.now() }; await Store.put('ocr', pageKey(n), rec); }
+  }
+  if (R.page !== n) return;
+  renderPanel(rec);
+}
+function renderPanel(rec) {
+  const E = R.els, n = R.page;
+  const head = el('div', { class: 'panel-head' },
+    el('h2', {}, `نص الصفحة ${n}`),
+    el('button', { class: 'icon-btn', title: 'تصغير الخط', 'aria-label': 'تصغير الخط', onclick: () => setReadSize(-2) }, el('span', { style: 'font-size:14px;font-weight:600' }, 'أ-')),
+    el('button', { class: 'icon-btn', title: 'تكبير الخط', 'aria-label': 'تكبير الخط', onclick: () => setReadSize(2) }, el('span', { style: 'font-size:18px;font-weight:600' }, 'أ+')),
+    rec ? el('button', { class: 'btn ghost', disabled: R.ocrBusy, onclick: () => runOCR([n]) }, icon('scan'), 'إعادة الاستخراج') : null,
+    el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => setPanel(false) }, icon('close')));
+  E.progress = el('div', { class: 'progress', hidden: !R.ocrBusy }, el('span', {}, R.ocrStatus || ''), el('div', { class: 'bar' }, el('i', { style: `width:${(R.ocrPct || 0) * 100}%` })));
+  let body;
+  if (!rec) {
+    body = el('div', { class: 'panel-empty' },
+      el('p', {}, 'هذه الصفحة صورة ممسوحة، فلا يمكن تحديد نصها بعد. استخرج النص لتتمكّن من تحديده وتلوينه وتسطيره وترجمته.'),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn primary', disabled: R.ocrBusy, onclick: () => runOCR([n]) }, icon('scan'), 'استخراج نص هذه الصفحة'),
+        el('button', { class: 'btn', disabled: R.ocrBusy, onclick: () => runOCR(Array.from({ length: R.book.pages }, (_, i) => i + 1)) }, 'كل الصفحات')),
+      el('p', { class: 'muted', style: 'font-size:13px;margin-top:14px' }, S.settings.ocrEngine === 'claude' && window.claude
+        ? 'المحرّك: Claude. تُرسل صورة الصفحة إلى Claude لقراءتها.' : 'المحرّك: على الجهاز (Tesseract). يعمل دون إرسال الصفحة إلى أي خادم. يمكنك تغييره من الإعدادات.'));
+  } else {
+    body = el('div', { class: 'ocr-text', id: 'ocrText', lang: 'ar', dir: 'auto', style: `--read-size:${S.settings.readSize}px` });
+    rec.paras.forEach((t, i) => body.append(paraEl(t, i)));
+    if (!rec.paras.length) body.append(el('p', { class: 'muted' }, 'لم يُعثر على نص في هذه الصفحة.'));
+    body.addEventListener('click', onMarkTap);
+  }
+  E.panel.replaceChildren(head, E.progress, body);
+}
+function setReadSize(d) { S.settings.readSize = Math.max(16, Math.min(34, S.settings.readSize + d)); saveSettings(); const t = $('#ocrText'); if (t) t.style.setProperty('--read-size', S.settings.readSize + 'px'); }
+function paraEl(text, i) {
+  const p = el('p', { 'data-para': i, dir: 'auto' });
+  const marks = S.marks.filter((m) => m.bookId === R.book.id && m.page === R.page && m.para === i).sort((a, b) => a.created - b.created);
+  const cuts = new Set([0, text.length]); marks.forEach((m) => { cuts.add(Math.max(0, m.start)); cuts.add(Math.min(text.length, m.end)); });
+  const pts = [...cuts].sort((a, b) => a - b);
+  for (let k = 0; k < pts.length - 1; k++) {
+    const a = pts[k], z = pts[k + 1]; if (a >= z) continue;
+    let node = document.createTextNode(text.slice(a, z));
+    for (const m of marks) if (m.start <= a && m.end >= z) {
+      node = el('mark', { 'data-id': m.id, 'data-style': m.style, 'data-color': m.color, class: m.note ? 'has-note' : null }, node);
+    }
+    p.append(node);
+  }
+  return p;
+}
+function refreshPara(i) {
+  const t = $('#ocrText'); if (!t) return;
+  const old = t.querySelector(`p[data-para="${i}"]`); if (!old) return;
+  old.replaceWith(paraEl(old.textContent, i));
+}
+async function nativeText(n) {
+  try {
+    const page = await R.pdf.getPage(n);
+    const tc = await page.getTextContent();
+    const items = tc.items.filter((it) => it.str && it.str.trim());
+    if (items.reduce((a, it) => a + it.str.length, 0) < 25) return null;
+    const lines = [];
+    for (const it of items) {
+      const y = it.transform[5], x = it.transform[4], hgt = Math.abs(it.transform[3]) || 10;
+      let ln = lines.find((l) => Math.abs(l.y - y) < hgt * 0.5);
+      if (!ln) { ln = { y, h: hgt, items: [] }; lines.push(ln); }
+      ln.items.push({ x, s: it.str });
+    }
+    lines.sort((a, b) => b.y - a.y);
+    const txt = lines.map((l) => { const rtl = isArabic(l.items.map((i) => i.s).join('')); l.items.sort((a, b) => rtl ? b.x - a.x : a.x - b.x); return l.items.map((i) => i.s).join(' ').replace(/\s+/g, ' ').trim(); });
+    const paras = []; let cur = '';
+    lines.forEach((l, i) => {
+      const gap = i ? lines[i - 1].y - l.y : 0;
+      if (i && gap > l.h * 1.9) { paras.push(cur.trim()); cur = ''; }
+      cur += ' ' + txt[i];
+    });
+    if (cur.trim()) paras.push(cur.trim());
+    return paras.filter(Boolean);
+  } catch { return null; }
+}
+let tess = null;
+const absUrl = (p) => new URL(p, location.href).href;
+function ocrProgress(status, pct) {
+  R.ocrStatus = status; R.ocrPct = pct;
+  const P = R.els?.progress; if (!P) return;
+  P.hidden = false; P.firstChild.textContent = status; P.querySelector('i').style.width = `${Math.round(pct * 100)}%`;
+}
+async function getTess() {
+  if (!tess) {
+    tess = Tesseract.createWorker('ara', 1, {
+      workerPath: absUrl('vendor/tesseract/worker-wrap.js'), corePath: absUrl('vendor/tesseract/'), langPath: absUrl('vendor/tessdata'),
+      workerBlobURL: false, cacheMethod: 'none',
+      logger: (m) => { if (m.status === 'recognizing text') ocrProgress(R.ocrLabel + ' — التعرّف على النص', m.progress); else ocrProgress('تحميل محرّك التعرّف على العربية…', m.progress || 0); },
+    }).catch((e) => { tess = null; throw e; });
+  }
+  return tess;
+}
+const clean = (t) => (t.includes('«') ? t : t.replace(/»/g, '،')).replace(/\s*\n\s*/g, ' ').replace(/[ \t]{2,}/g, ' ').replace(/\s+([،.؛:؟!])/g, '$1').trim();
+async function ocrLocal(canvas) {
+  const w = await getTess();
+  const { data } = await w.recognize(canvas);
+  let paras = linesToParas(data.lines || []);
+  if (!paras.length) paras = (data.paragraphs || []).map((p) => clean(p.text)).filter(Boolean);
+  if (!paras.length) paras = (data.text || '').split(/\n\s*\n/).map(clean).filter(Boolean);
+  // أرقام الصفحات والرموز المنفردة ليست فقرات
+  return paras.filter((p) => p.replace(/[^\p{L}]/gu, '').length >= 2);
+}
+// Tesseract يدمج الفقرات أحيانًا، فنقسمها حسب المسافة العمودية بين الأسطر
+function linesToParas(lines) {
+  lines = lines.filter((l) => l.text && l.text.trim() && l.bbox).sort((a, b) => a.bbox.y0 - b.bbox.y0);
+  if (!lines.length) return [];
+  const gaps = lines.slice(1).map((l, i) => l.bbox.y0 - lines[i].bbox.y1).filter((g) => g > 0).sort((a, b) => a - b);
+  const med = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+  const hts = lines.map((l) => l.bbox.y1 - l.bbox.y0).sort((a, b) => a - b), mh = hts[Math.floor(hts.length / 2)];
+  const limit = Math.max(med * 1.8, mh * 0.6);
+  const paras = []; let cur = clean(lines[0].text);
+  for (let i = 1; i < lines.length; i++) {
+    const gap = lines[i].bbox.y0 - lines[i - 1].bbox.y1;
+    if (gap > limit) { paras.push(cur); cur = ''; }
+    cur = (cur + ' ' + clean(lines[i].text)).trim();
+  }
+  paras.push(cur);
+  return paras.filter(Boolean);
+}
+async function ocrClaude(canvas) {
+  const sample = await cap('sample');
+  if (!sample) throw new Error('claude-unavailable');
+  const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.85));
+  ocrProgress(R.ocrLabel + ' — يقرؤها Claude…', 0.5);
+  const res = await sample('The attached image is one scanned page of a book. Transcribe all of its text exactly, in its original language (mostly Arabic), in reading order. Separate paragraphs with one blank line. Output only the transcription: no commentary, no headings you invented, no translation.', { images: [blob], modelTier: 'default' });
+  return res.text.split(/\n\s*\n/).map(clean).filter(Boolean);
+}
+async function runOCR(pages) {
+  if (R.ocrBusy) return;
+  R.ocrBusy = true; const book = R.book, pdf = R.pdf;
+  renderPanel(await Store.get('ocr', pageKey()));
+  let done = 0;
+  try {
+    for (const n of pages) {
+      if (R.book !== book) break;
+      R.ocrLabel = pages.length > 1 ? `الصفحة ${n} (${done + 1} من ${pages.length})` : `الصفحة ${n}`;
+      ocrProgress(R.ocrLabel + ' — تجهيز الصورة', 0);
+      const k = `${book.id}:${n}`;
+      if (pages.length > 1 && await Store.get('ocr', k)) { done++; continue; }
+      const canvas = await renderToCanvas(pdf, n, S.settings.ocrEngine === 'claude' && window.claude ? 1600 : 2200);
+      let paras, engine = window.claude ? S.settings.ocrEngine : 'local';
+      if (engine === 'claude') {
+        try { paras = await ocrClaude(canvas); } catch (e) { engine = 'local'; toast('Claude غير متاح هنا، فاستُخدم المحرّك المحلي.'); }
+      }
+      if (!paras) paras = await ocrLocal(canvas);
+      await Store.put('ocr', k, { paras, engine, at: Date.now() });
+      done++;
+      if (R.book === book && R.page === n) { R.ocrBusy = pages.length > 1 && done < pages.length; renderPanel({ paras }); R.ocrBusy = true; }
+    }
+    toast(pages.length > 1 ? `استُخرج نص ${fmt(done)} صفحة.` : 'استُخرج النص. حدّد أي جملة لتلوينها أو ترجمتها.');
+  } catch (e) {
+    console.error(e); toast('تعذّر استخراج النص. حاول مرة أخرى.');
+  } finally {
+    R.ocrBusy = false; R.ocrStatus = '';
+    if (R.book === book) loadPanel();
+    changed('ocr');
+  }
+}
+
+// ---------- Selection toolbar: color / underline / translate ----------
+const COLORS = { yellow: '#F2C230', green: '#6CC35E', pink: '#EC6E9F', blue: '#5AA2EC' };
+let selBar = null, pop = null, curSel = null;
+function hideSelBar() { selBar?.remove(); selBar = null; pop?.remove(); pop = null; }
+function offsetIn(root, node, off) { const r = document.createRange(); r.setStart(root, 0); r.setEnd(node, off); return r.toString().length; }
+function rangeParts(range) {
+  const root = $('#ocrText'); if (!root) return [];
+  const parts = [];
+  root.querySelectorAll('p[data-para]').forEach((p) => {
+    if (!range.intersectsNode(p)) return;
+    const len = p.textContent.length;
+    const s = p.contains(range.startContainer) ? offsetIn(p, range.startContainer, range.startOffset) : 0;
+    const e = p.contains(range.endContainer) ? offsetIn(p, range.endContainer, range.endOffset) : len;
+    if (e > s) parts.push({ para: +p.dataset.para, start: s, end: e, text: p.textContent.slice(s, e) });
+  });
+  return parts;
+}
+document.addEventListener('selectionchange', debounce(() => {
+  if (readerEl.hidden) return;
+  const sel = getSelection(), root = $('#ocrText');
+  if (!root || !sel.rangeCount || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  if (!root.contains(range.commonAncestorContainer)) return;
+  const parts = rangeParts(range); if (!parts.length) return;
+  curSel = { parts, text: sel.toString().trim(), rect: range.getBoundingClientRect() };
+  showSelBar(curSel.rect, null);
+}, 220));
+function place(node, rect, gap = 12) {
+  document.body.append(node);
+  const w = node.offsetWidth, h = node.offsetHeight, vw = innerWidth, vh = innerHeight;
+  let top = rect.bottom + gap; if (top + h > vh - 12) top = Math.max(12, rect.top - h - gap);
+  let left = rect.left + rect.width / 2 - w / 2; left = Math.max(12, Math.min(vw - w - 12, left));
+  node.style.top = top + 'px'; node.style.left = left + 'px';
+}
+function showSelBar(rect, mark) {
+  hideSelBar();
+  const group = mark ? S.marks.filter((m) => m.group === mark.group) : null;
+  const text = mark ? group.map((m) => m.text).join(' ') : curSel.text;
+  const b = el('div', { class: 'sel-bar', role: 'toolbar', 'aria-label': 'خيارات النص المحدد' });
+  b.addEventListener('pointerdown', (e) => { if (!e.target.closest('textarea')) e.preventDefault(); });
+  b.append(...Object.entries(COLORS).map(([k, c]) => el('button', { class: 'dot', style: `background:${c}`, 'aria-label': `تلوين ${k}`, title: 'تلوين',
+    onclick: () => mark ? updateGroup(mark.group, { color: k, style: 'highlight' }) : addMarks('highlight', k) })));
+  b.append(el('span', { class: 'sep' }),
+    el('button', { onclick: () => mark ? updateGroup(mark.group, { style: mark.style === 'underline' ? 'highlight' : 'underline' }) : addMarks('underline', S.settings.lastColor === 'yellow' ? 'blue' : S.settings.lastColor) }, icon('underline'), mark?.style === 'underline' ? 'تظليل' : 'تسطير'),
+    el('button', { onclick: () => translatePop(text, rect) }, icon('translate'), 'ترجمة'),
+    el('button', { onclick: () => notePop(mark ? mark.group : addMarks('highlight', 'yellow', true), rect) }, icon('note'), 'ملاحظة'),
+    el('button', { onclick: () => copyText(text) }, icon('copy'), 'نسخ'),
+    mark ? el('button', { onclick: () => removeGroup(mark.group) }, icon('trash'), 'إزالة') : null);
+  place(b, rect); selBar = b;
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); toast('نُسخ النص.'); } catch { toast('تعذّر النسخ تلقائيًا. استخدم قائمة النسخ في iPad.'); }
+  hideSelBar();
+}
+function addMarks(style, color, keepBar) {
+  if (!curSel) return null;
+  const group = uid(), now = Date.now();
+  for (const p of curSel.parts) {
+    const m = { id: uid(), group, bookId: R.book.id, page: R.page, para: p.para, start: p.start, end: p.end, text: p.text, color, style, note: '', created: now };
+    S.marks.push(m); Store.put('marks', m.id, m);
+  }
+  S.settings.lastColor = color; saveSettings();
+  const paras = curSel.parts.map((p) => p.para);
+  getSelection().removeAllRanges(); curSel = null;
+  paras.forEach(refreshPara);
+  if (!keepBar) hideSelBar();
+  changed('marks');
+  return group;
+}
+function updateGroup(group, patch) {
+  for (const m of S.marks.filter((x) => x.group === group)) { Object.assign(m, patch); Store.put('marks', m.id, m); refreshPara(m.para); }
+  if (patch.color) { S.settings.lastColor = patch.color; saveSettings(); }
+  hideSelBar(); changed('marks');
+}
+function removeGroup(group) {
+  const gone = S.marks.filter((x) => x.group === group);
+  S.marks = S.marks.filter((x) => x.group !== group);
+  gone.forEach((m) => { Store.del('marks', m.id); refreshPara(m.para); });
+  hideSelBar(); changed('marks'); toast('أُزيل التظليل.');
+}
+function onMarkTap(e) {
+  const mk = e.target.closest('mark'); if (!mk) return;
+  const sel = getSelection(); if (sel && !sel.isCollapsed) return;
+  const m = S.marks.find((x) => x.id === mk.dataset.id); if (!m) return;
+  showSelBar(mk.getBoundingClientRect(), m);
+}
+const LANGS = { en: 'الإنجليزية', fr: 'الفرنسية', es: 'الإسبانية', tr: 'التركية', ar: 'العربية' };
+const LANG_EN = { en: 'English', fr: 'French', es: 'Spanish', tr: 'Turkish', ar: 'Arabic' };
+async function translatePop(text, rect) {
+  hideSelBar();
+  const to = isArabic(text) ? S.settings.translateTo : 'ar';
+  const out = el('div', { class: 'out', dir: to === 'ar' ? 'rtl' : 'ltr', lang: to }, 'جارٍ الترجمة…');
+  const gUrl = `https://translate.google.com/?sl=auto&tl=${to}&text=${encodeURIComponent(text.slice(0, 4000))}&op=translate`;
+  const p = el('div', { class: 'pop', role: 'dialog', 'aria-label': 'الترجمة' },
+    el('h3', {}, el('span', {}, `الترجمة إلى ${LANGS[to]}`), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: hideSelBar }, icon('close'))),
+    el('div', { class: 'src', lang: 'ar' }, text), out,
+    el('div', { class: 'row', style: 'margin-top:12px' },
+      el('button', { class: 'btn', onclick: async () => { try { await navigator.clipboard.writeText(out.textContent); toast('نُسخت الترجمة.'); } catch { toast('تعذّر النسخ.'); } } }, icon('copy'), 'نسخ الترجمة'),
+      el('a', { class: 'btn ghost', href: gUrl, target: '_blank', rel: 'noopener' }, 'فتح في ترجمة Google')));
+  place(p, rect); pop = p;
+  const sample = await cap('sample');
+  if (!sample) {
+    try { out.textContent = await translateFree(text, isArabic(text) ? 'ar' : 'Autodetect', to); }
+    catch { out.textContent = navigator.onLine ? 'تعذّرت الترجمة الآن. حاول بعد قليل أو افتح ترجمة Google.' : 'الترجمة تحتاج اتصالًا بالإنترنت.'; }
+    return;
+  }
+  try {
+    const res = await sample(`Translate the text between the markers into ${LANG_EN[to]}. Keep the meaning and tone. Output only the translation.\n<<<\n${text}\n>>>`, {
+      modelTier: 'quick', onText: ({ text: t }) => { if (t) out.textContent = t; },
+    });
+    out.textContent = res.text.trim();
+  } catch (e) {
+    out.textContent = e && e.code === 'not_granted' ? 'لم يُسمح باستخدام Claude للترجمة. يمكنك فتح النص في ترجمة Google.' : 'تعذّرت الترجمة الآن. حاول مرة أخرى أو افتح ترجمة Google.';
+  }
+}
+/** ترجمة مجانية عبر خدمة MyMemory، على دفعات لا تتجاوز 450 حرفًا. */
+async function translateFree(text, from, to) {
+  const parts = []; let cur = '';
+  for (const piece of text.split(/(?<=[.!?؟،؛\n])\s+/)) {
+    if ((cur + ' ' + piece).length > 450 && cur) { parts.push(cur); cur = piece; } else cur = (cur + ' ' + piece).trim();
+  }
+  if (cur) parts.push(cur);
+  const out = [];
+  for (const q of parts) {
+    const res = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(q.slice(0, 480))}&langpair=${from}|${to}`);
+    const j = await res.json();
+    if (j.responseStatus !== 200 && j.responseStatus !== '200') throw new Error(j.responseDetails || 'translate failed');
+    out.push(j.responseData.translatedText);
+  }
+  return out.join(' ');
+}
+function notePop(group, rect) {
+  hideSelBar(); if (!group) return;
+  const ms = S.marks.filter((m) => m.group === group);
+  const ta = el('textarea', { 'aria-label': 'نص الملاحظة', placeholder: 'اكتب ملاحظتك… (تُحفظ تلقائيًا)', value: ms[0]?.note || '' });
+  ta.addEventListener('input', () => {
+    for (const m of ms) { m.note = ta.value; saveLater('mark:' + m.id, () => Store.put('marks', m.id, m), 400); }
+    saveLater('notepara:' + group, () => { ms.forEach((m) => refreshPara(m.para)); changed('marks'); }, 600);
+  });
+  const p = el('div', { class: 'pop', role: 'dialog', 'aria-label': 'ملاحظة' },
+    el('h3', {}, el('span', {}, 'ملاحظة على التظليل'), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => { hideSelBar(); ms.forEach((m) => refreshPara(m.para)); } }, icon('close'))),
+    el('div', { class: 'src', lang: 'ar' }, ms.map((m) => m.text).join(' ')), ta);
+  place(p, rect); pop = p; setTimeout(() => ta.focus(), 50);
+}
+document.addEventListener('pointerdown', (e) => {
+  if ((selBar && selBar.contains(e.target)) || (pop && pop.contains(e.target))) return;
+  if (selBar && !pop) setTimeout(() => { const s = getSelection(); if (!s || s.isCollapsed) { selBar?.remove(); selBar = null; } }, 250);
+  else if (pop) hideSelBar();
+});
+
+// ---------- Notes ----------
+function newNote(sample) {
+  const pages = (sample?.pages || [{ text: '', strokes: [] }]).map((p) => ({ id: uid(), ...p }));
+  const n = { id: uid(), title: sample?.title || 'ملاحظة جديدة', created: Date.now(), updated: Date.now(), paper: 'lined', pages };
+  S.notes.push(n); Store.put('notes', n.id, noteForSave(n)); S.noteId = n.id; changed('notes');
+  return n;
+}
+let noteInks = [], activeInk = null;
+function renderNotes() {
+  const q = S.noteQuery.trim();
+  const notes = [...S.notes].sort((a, b) => b.updated - a.updated).filter((n) => !q || (n.title + ' ' + n.pages.map((p) => p.text).join(' ')).includes(q));
+  if (!S.noteId || !S.notes.some((n) => n.id === S.noteId)) S.noteId = notes[0]?.id || null;
+  const search = el('input', { class: 'input', type: 'search', placeholder: 'بحث في الملاحظات', 'aria-label': 'بحث', value: S.noteQuery, id: 'noteSearch' });
+  search.addEventListener('input', debounce(() => { S.noteQuery = search.value; renderNotes(); $('#noteSearch')?.focus(); }, 250));
+  const tabs = el('div', { class: 'seg' },
+    el('button', { 'aria-pressed': String(S.notesTab === 'notebook'), onclick: () => { S.notesTab = 'notebook'; renderNotes(); } }, 'الدفتر'),
+    el('button', { 'aria-pressed': String(S.notesTab === 'annos'), onclick: () => { S.notesTab = 'annos'; renderNotes(); } }, `من الكتب (${fmt(new Set(S.marks.map((m) => m.group)).size)})`));
+  const list = el('div', { class: 'notes-items' });
+  if (S.notesTab === 'notebook') {
+    notes.forEach((n) => list.append(el('button', { class: 'note-item', 'aria-current': String(n.id === S.noteId), onclick: () => { S.noteId = n.id; renderNotes(); } },
+      el('b', {}, n.title || 'بدون عنوان'),
+      el('small', {}, new Date(n.updated).toLocaleDateString('ar-u-nu-latn', { day: 'numeric', month: 'long' }) + ' · ' + (n.pages.map((p) => p.text).join(' ').trim().slice(0, 60) || `${n.pages.length} صفحة`)))));
+    if (!notes.length) list.append(el('p', { class: 'muted', style: 'padding:12px' }, q ? 'لا نتائج.' : 'لا توجد ملاحظات.'));
+  } else {
+    const groups = groupMarks().filter((g) => !q || (g.text + g.note).includes(q));
+    groups.forEach((g) => {
+      const b = S.books.find((x) => x.id === g.bookId);
+      list.append(el('button', { class: 'note-item anno-item', 'data-color': g.color, onclick: () => openReader(g.bookId, g.page, true) },
+        el('q', {}, g.text.length > 140 ? g.text.slice(0, 140) + '…' : g.text),
+        g.note ? el('small', { style: 'white-space:normal;color:var(--ink)' }, '✎ ' + g.note) : null,
+        el('small', {}, `${b?.title || 'كتاب محذوف'} · صفحة ${g.page}${g.style === 'underline' ? ' · تسطير' : ''}`)));
+    });
+    if (!groups.length) list.append(el('p', { class: 'muted', style: 'padding:12px;line-height:1.8' }, 'ظلّل نصًا داخل أي كتاب وسيظهر هنا مع ملاحظاتك.'));
+  }
+  const side = el('section', { class: 'notes-list' },
+    el('div', { class: 'notes-list-head' },
+      el('div', { class: 'row', style: 'justify-content:space-between' }, el('h1', {}, 'الملاحظات'),
+        el('button', { class: 'btn primary', onclick: () => { S.notesTab = 'notebook'; newNote(); renderNotes(); } }, icon('plus'), 'جديدة')),
+      tabs, search),
+    list);
+  const note = S.notes.find((n) => n.id === S.noteId);
+  const editor = el('section', { class: 'notes-editor' });
+  if (note && S.notesTab === 'notebook') buildEditor(editor, note);
+  else editor.append(el('div', { class: 'empty' }, S.notesTab === 'annos' ? 'اختر تظليلًا لفتح الكتاب على صفحته.' : 'أنشئ ملاحظة جديدة لتكتب بلوحة المفاتيح أو بالقلم.'));
+  main.replaceChildren(el('div', { class: 'notes-layout' }, side, editor));
+}
+function groupMarks() {
+  const m = new Map();
+  for (const x of [...S.marks].sort((a, b) => b.created - a.created)) {
+    if (!m.has(x.group)) m.set(x.group, { ...x, text: '' });
+    const g = m.get(x.group); g.text = (g.text + ' ' + x.text).trim();
+  }
+  return [...m.values()];
+}
+function buildEditor(host, note) {
+  noteInks = []; activeInk = null;
+  const touch = () => { note.updated = Date.now(); saveNote(note); };
+  const title = el('input', { class: 'title-in', value: note.title, 'aria-label': 'عنوان الملاحظة', id: 'noteTitle' });
+  title.addEventListener('input', () => { note.title = title.value; touch(); saveLater('notes-list', () => changed('notes'), 800); });
+  const drawing = S.noteMode === 'draw';
+  let delStage = false;
+  const delBtn = el('button', { class: 'btn ghost danger', onclick: () => {
+    if (!delStage) { delStage = true; delBtn.lastChild.textContent = 'اضغط مرة أخرى للحذف'; setTimeout(() => { delStage = false; if (delBtn.isConnected) delBtn.lastChild.textContent = 'حذف'; }, 3000); return; }
+    S.notes = S.notes.filter((n) => n.id !== note.id); Store.del('notes', note.id);
+    note.pages.forEach((p) => Store.del('ink', 'np:' + p.id, true)); S.noteId = null; changed('notes'); renderNotes(); toast('حُذفت الملاحظة.');
+  } }, icon('trash'), el('span', {}, 'حذف'));
+  const bar = el('div', { class: 'editor-bar' }, title,
+    el('div', { class: 'seg', role: 'group', 'aria-label': 'وضع الإدخال' },
+      el('button', { 'aria-pressed': String(!drawing), onclick: () => { S.noteMode = 'type'; renderNotes(); } }, 'كتابة'),
+      el('button', { 'aria-pressed': String(drawing), onclick: () => { S.noteMode = 'draw'; renderNotes(); } }, 'رسم بالقلم')),
+    el('div', { class: 'seg', role: 'group', 'aria-label': 'نوع الورق' },
+      ...[['lined', 'مسطّر'], ['grid', 'مربعات'], ['plain', 'سادة']].map(([k, l]) => el('button', { 'aria-pressed': String(note.paper === k), onclick: () => { note.paper = k; touch(); host.querySelectorAll('.note-page').forEach((p) => p.dataset.paper = k); bar.querySelectorAll('[data-paper-btn]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.paperBtn === k))); }, 'data-paper-btn': k }, l))),
+    delBtn);
+  const scroll = el('div', { class: 'editor-scroll' });
+  if (drawing) { const pb = penBar(() => activeInk || noteInks[0]); pb.style.cssText = 'position:sticky;top:0;transform:none;left:auto;margin:0 auto 18px;width:max-content'; scroll.append(pb); }
+  const ro = new ResizeObserver((ents) => ents.forEach((en) => en.target._ink?.resize()));
+  note.pages.forEach((pg, i) => {
+    const ta = el('textarea', { 'aria-label': `نص الصفحة ${i + 1}`, placeholder: i === 0 ? 'اكتب هنا…' : '', value: pg.text, readonly: drawing });
+    ta.addEventListener('input', () => { pg.text = ta.value; touch(); });
+    const inkHost = el('div');
+    const page = el('div', { class: 'note-page', 'data-paper': note.paper }, ta, inkHost, el('div', { class: 'page-no' }, `${i + 1}`));
+    if (note.pages.length > 1) page.append(el('button', { class: 'icon-btn del-page', 'aria-label': 'حذف الصفحة', title: 'حذف الصفحة', onclick: () => { const [gone] = note.pages.splice(i, 1); Store.del('ink', 'np:' + gone.id, true); touch(); renderNotes(); } }, icon('trash')));
+    const ink = new Ink(inkHost, { blend: false, onStart: (k) => { activeInk = k; }, onCommit: (s) => { pg.strokes = s.slice(); saveNoteInk(pg); touch(); } });
+    ink.load(pg.strokes); ink.setEnabled(drawing); page._ink = ink; noteInks.push(ink);
+    ro.observe(page); scroll.append(page);
+  });
+  scroll.append(el('div', { style: 'text-align:center' }, el('button', { class: 'btn', onclick: () => { note.pages.push({ id: uid(), text: '', strokes: [] }); touch(); renderNotes(); requestAnimationFrame(() => { const s = $('.editor-scroll'); s && (s.scrollTop = s.scrollHeight); }); } }, icon('plus'), 'صفحة جديدة')));
+  host.append(bar, scroll);
+}
+
+// ---------- Stats ----------
+function lastDays(n) { const out = []; const d = new Date(); d.setHours(12); for (let i = n - 1; i >= 0; i--) { const x = new Date(d); x.setDate(d.getDate() - i); out.push(x); } return out; }
+function streak() {
+  let s = 0; const d = new Date(); d.setHours(12);
+  if (!((S.daily[dayKey(d)]?.sec || 0) >= 60)) d.setDate(d.getDate() - 1);
+  while ((S.daily[dayKey(d)]?.sec || 0) >= 60) { s++; d.setDate(d.getDate() - 1); }
+  return s;
+}
+function niceMax(v) { if (v <= 5) return 5; const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return v; }
+function barChart(days) {
+  const W = 640, H = 230, padL = 36, padR = 8, padT = 22, padB = 40, n = days.length;
+  const vals = days.map((d) => (S.daily[dayKey(d)]?.sec || 0) / 60);
+  const max = niceMax(Math.max(...vals, 1));
+  const iw = W - padL - padR, ih = H - padT - padB, bw = iw / n;
+  const svg = el('svg', { class: 'chart', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'دقائق القراءة في آخر 14 يومًا' });
+  for (const t of [0, max / 2, max]) {
+    const y = padT + ih - (t / max) * ih;
+    svg.append(el('line', { class: 'grid', x1: padL, x2: W - padR, y1: y, y2: y }));
+    svg.append(el('text', { x: padL - 6, y: y + 4, 'text-anchor': 'end' }, fmt(t)));
+  }
+  days.forEach((d, i) => {
+    // الزمن يجري من اليمين إلى اليسار: الأقدم يمينًا واليوم يسارًا
+    const x = padL + (n - 1 - i) * bw, v = vals[i], h = (v / max) * ih, y = padT + ih - h;
+    const today = i === n - 1;
+    svg.append(el('rect', { class: 'bar' + (today ? ' today' : ''), x: x + bw * 0.18, y, width: bw * 0.64, height: Math.max(h, v > 0 ? 2 : 0), rx: 3 }));
+    if (v >= 1) svg.append(el('text', { class: 'val', x: x + bw / 2, y: y - 6, 'text-anchor': 'middle' }, fmt(v)));
+    if (i % 2 === (n - 1) % 2) {
+      svg.append(el('text', { x: x + bw / 2, y: H - padB + 18, 'text-anchor': 'middle' }, today ? 'اليوم' : d.toLocaleDateString('ar-u-nu-latn', { weekday: 'short' })));
+      svg.append(el('text', { x: x + bw / 2, y: H - padB + 34, 'text-anchor': 'middle' }, fmt(d.getDate())));
+    }
+  });
+  return svg;
+}
+function renderStats() {
+  const days7 = lastDays(7), days14 = lastDays(14);
+  const sum = (days, f) => days.reduce((a, d) => a + f(S.daily[dayKey(d)] || { sec: 0, pages: [] }), 0);
+  const weekMin = sum(days7, (r) => r.sec) / 60;
+  const prevWeekMin = lastDays(14).slice(0, 7).reduce((a, d) => a + (S.daily[dayKey(d)]?.sec || 0), 0) / 60;
+  const weekPages = sum(days7, (r) => r.pages.length);
+  const groups = groupMarks();
+  const tile = (k, v, unit, extra) => el('div', { class: 'tile' }, el('div', { class: 'k' }, k), el('div', { class: 'v' }, fmt(v), unit ? el('small', {}, unit) : null), extra ? el('div', { class: 'muted', style: 'font-size:12.5px' }, extra) : null);
+  const delta = weekMin - prevWeekMin;
+  const books = [...S.books].sort((a, b) => (b.seen.length / b.pages) - (a.seen.length / a.pages));
+  const byColor = Object.keys(COLORS).map((c) => [c, groups.filter((g) => g.color === c).length]);
+  const totalMarks = groups.length || 1;
+  const colorNames = { yellow: 'أصفر', green: 'أخضر', pink: 'وردي', blue: 'أزرق' };
+  const view = el('div', { class: 'view' }, el('div', { class: 'view-inner' },
+    el('div', { class: 'view-head' }, el('div', {}, el('h1', {}, 'إحصائيات القراءة'), el('div', { class: 'sub' }, 'تتحدّث تلقائيًا أثناء القراءة والتظليل والكتابة.'))),
+    el('div', { class: 'tiles' },
+      tile('القراءة هذا الأسبوع', weekMin, 'دقيقة', prevWeekMin || weekMin ? `${delta >= 0 ? '+' : '−'}${fmt(Math.abs(delta))} عن الأسبوع الماضي` : null),
+      tile('صفحات هذا الأسبوع', weekPages, 'صفحة'),
+      tile('أيام متتالية', streak(), 'يوم', 'يُحتسب اليوم بدقيقة قراءة واحدة على الأقل'),
+      tile('التظليلات', groups.length, null, `${fmt(groups.filter((g) => g.note).length)} منها بملاحظة`),
+      tile('الملاحظات', S.notes.length, null, `${fmt(S.notes.reduce((a, n) => a + n.pages.length, 0))} صفحة في الدفتر`)),
+    el('div', { class: 'cards' },
+      el('div', { class: 'card', style: 'grid-column:1/-1' }, el('h2', {}, 'دقائق القراءة يوميًا'), el('div', { class: 'hint' }, 'آخر 14 يومًا. العمود الداكن هو اليوم.'), el('div', { style: 'overflow-x:auto' }, barChart(days14))),
+      el('div', { class: 'card' }, el('h2', {}, 'التقدّم في الكتب'), el('div', { class: 'hint' }, 'نسبة الصفحات التي فُتحت من كل كتاب.'),
+        books.length ? books.map((b) => {
+          const pct = Math.round((b.seen.length / b.pages) * 100);
+          return el('div', { class: 'pbar' }, el('div', { class: 't' }, b.title), el('div', { class: 'n' }, `${pct}% · ${fmt(b.seen.length)}/${fmt(b.pages)} · ${fmt((b.secs || 0) / 60)} د`), el('div', { class: 'track' }, el('i', { style: `width:${pct}%` })));
+        }) : el('p', { class: 'muted' }, 'أضف كتابًا لترى تقدّمك.')),
+      el('div', { class: 'card' }, el('h2', {}, 'التظليلات حسب اللون'), el('div', { class: 'hint' }, 'استخدم الألوان لتصنيف ما تقرؤه: تعريفات، أفكار، أسئلة…'),
+        byColor.map(([c, v]) => el('div', { class: 'pbar' }, el('div', { class: 't' }, colorNames[c]), el('div', { class: 'n' }, fmt(v)), el('div', { class: 'track' }, el('i', { style: `width:${(v / totalMarks) * 100}%;background:${COLORS[c]}` })))))),
+  ));
+  const keep = main.querySelector('.view')?.scrollTop || 0;
+  main.replaceChildren(view); view.scrollTop = keep;
+}
+
+// ---------- Settings ----------
+function renderSettings() {
+  const st = S.settings;
+  const seg = (opts, cur, set) => el('div', { class: 'seg' }, ...opts.map(([k, l]) => el('button', { 'aria-pressed': String(cur === k), onclick: () => { set(k); saveSettings(); renderSettings(); } }, l)));
+  const usage = el('span', { class: 'muted num', style: 'font-size:14px' }, '');
+  if (Cloud.ok) cap('assets').then((a) => a?.list()).then((r) => { if (r?.usage) usage.textContent = `الكتب المرفوعة: ${fmt(r.usage.bytes / 1048576)} م.ب من ${fmt(r.usage.maxBytes / 1048576)} م.ب`; }).catch(() => {});
+  else navigator.storage?.estimate?.().then((e) => { usage.textContent = `المستخدم ${(e.usage / 1048576).toFixed(1)} م.ب`; }).catch(() => {});
+  const view = el('div', { class: 'view' }, el('div', { class: 'view-inner' },
+    el('div', { class: 'view-head' }, el('div', {}, el('h1', {}, 'الإعدادات'), el('div', { class: 'sub' }, Cloud.ok ? 'كل التغييرات تُحفظ فورًا في حسابك.' : 'كل التغييرات تُحفظ فورًا على هذا الجهاز.'))),
+    el('div', { class: 'settings' },
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'مكان الحفظ'),
+        el('span', {}, Cloud.ok ? 'حسابك في Claude. تبقى مكتبتك بعد إغلاق التطبيق وتظهر على أجهزتك الأخرى. ملفات PDF حتى 20 م.ب تُرفع إلى حسابك، والأكبر تبقى على الجهاز الذي أُضيفت منه.'
+          : 'على هذا الـ iPad نفسه، وتبقى بعد إغلاق التطبيق. لا تحذف التطبيق من الشاشة الرئيسية لأن حذفه يحذف مكتبته، وصدّر نسخة احتياطية من حين لآخر.')), usage),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'مظهر التطبيق'), el('span', {}, 'شكل الرفوف نفسها تختاره من زر «تخصيص» في المكتبة.')),
+        seg(SKINS, st.skin, (k) => { st.skin = k; applySkin(); })),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'لغة الترجمة'), el('span', {}, 'يُترجم النص العربي إليها، ويُترجم غير العربي إلى العربية.')),
+        seg([['en', 'الإنجليزية'], ['fr', 'الفرنسية'], ['es', 'الإسبانية'], ['tr', 'التركية']], st.translateTo, (k) => { st.translateTo = k; })),
+      !window.claude ? null : el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'محرّك استخراج النص'), el('span', {}, 'المحلي يعمل دون إنترنت ولا يرسل الصفحة. Claude أدقّ مع الخطوط العربية الصعبة.')),
+        seg([['local', 'على الجهاز'], ['claude', 'Claude']], st.ocrEngine, (k) => { st.ocrEngine = k; })),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'الرسم بـ Apple Pencil فقط'), el('span', {}, 'يتجاهل لمس الإصبع وراحة اليد أثناء الكتابة، ويبقى الإصبع لتقليب الصفحات.')),
+        seg([[true, 'مفعّل'], [false, 'الإصبع يرسم أيضًا']], st.penOnly, (k) => { st.penOnly = k; })),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'حجم خط النص المستخرج'), el('span', { class: 'num' }, `${st.readSize} بكسل`)),
+        el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => { setReadSize(-2); renderSettings(); } }, 'أصغر'), el('button', { class: 'btn', onclick: () => { setReadSize(2); renderSettings(); } }, 'أكبر'))),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'نسخة احتياطية'), el('span', {}, 'تصدير الملاحظات والتظليلات والكتابة بالقلم والإحصائيات في ملف واحد. ملفات PDF نفسها لا تُضمَّن.')),
+        el('div', { class: 'row' }, el('button', { class: 'btn', onclick: exportBackup }, 'تصدير'), el('button', { class: 'btn', onclick: () => $('#backupIn').click() }, 'استيراد'))),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'على iPad'), el('span', {}, isInstalled() ? 'التطبيق مثبّت على الشاشة الرئيسية ويعمل دون إنترنت.' : 'افتح رابط التطبيق في Safari، ثم «مشاركة» ← «إضافة إلى الشاشة الرئيسية». يفتح بعدها مباشرة بملء الشاشة ويعمل دون إنترنت.')))),
+  ));
+  main.replaceChildren(view);
+}
+async function exportBackup() {
+  const dump = { app: 'raff', version: 1, at: new Date().toISOString(), settings: S.settings, books: S.books, shelves: S.shelves, notes: S.notes, marks: S.marks, daily: Object.values(S.daily), ink: {}, ocr: {} };
+  for (const s of ['ink', 'ocr']) for (const k of await Store.keys(s)) dump[s][k] = await Store.get(s, k);
+  const data = JSON.stringify(dump);
+  const dl = await cap('downloads');
+  if (!dl) {
+    const file = new File([data], `raff-backup-${dayKey()}.json`, { type: 'application/json' });
+    try {
+      if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'نسخة رفّ الاحتياطية' }); toast('اختر «حفظ في الملفات» لحفظ النسخة.'); return; }
+    } catch (e) { if (e?.name === 'AbortError') return; }
+    const a = el('a', { href: URL.createObjectURL(file), download: file.name }); document.body.append(a); a.click(); a.remove();
+    toast('صُدّرت النسخة الاحتياطية.');
+    return;
+  }
+  try { await dl.save({ filename: `raff-backup-${dayKey()}.json`, data: new Blob([data], { type: 'application/json' }) }); toast('صُدّرت النسخة الاحتياطية.'); }
+  catch (e) { if (e?.code !== 'declined') toast('لم يكتمل التصدير.'); }
+}
+$('#backupIn').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const d = JSON.parse(await f.text()); if (d.app !== 'raff') throw 0;
+    for (const b of d.books || []) { const cur = S.books.find((x) => x.id === b.id); if (cur) { Object.assign(cur, b); await Store.put('books', b.id, cur); } }
+    for (const n of d.notes || []) {
+      n.pages.forEach((p) => { p.id ||= uid(); p.strokes ||= []; });
+      S.notes = S.notes.filter((x) => x.id !== n.id).concat(n);
+      await Store.put('notes', n.id, noteForSave(n));
+      for (const p of n.pages) if (p.strokes.length) await Store.put('ink', 'np:' + p.id, p.strokes, true);
+    }
+    for (const m of d.marks || []) { S.marks = S.marks.filter((x) => x.id !== m.id).concat(m); await Store.put('marks', m.id, m); }
+    for (const r of d.daily || []) { S.daily[r.date] = r; await Store.put('daily', r.date, r); }
+    for (const s of ['ink', 'ocr']) for (const [k, v] of Object.entries(d[s] || {})) await Store.put(s, k, s === 'ink' ? unpackInk(v) : v, true);
+    for (const sh of d.shelves || []) { S.shelves = S.shelves.filter((x) => x.id !== sh.id).concat(sh); await Store.put('shelves', sh.id, sh, true); }
+    changed('import'); toast('استُعيدت النسخة الاحتياطية.'); showView(S.view);
+  } catch { toast('الملف ليس نسخة احتياطية من رفّ.'); }
+});
+
+// ---------- Boot ----------
+addEventListener('visibilitychange', () => { if (document.hidden) flushLater(); });
+addEventListener('pagehide', flushLater);
+
+/** أول تشغيل داخل Claude: ينقل ما كان محفوظًا في هذا المتصفح إلى حسابك. */
+async function migrateLocalToCloud() {
+  const [books, notes] = await Promise.all([Local.all('books'), Local.all('notes')]);
+  if (!books.length && !notes.length) return false;
+  for (const s of ['shelves', 'notes', 'marks', 'ocr', 'daily', 'ink']) {
+    for (const k of await Local.keys(s)) {
+      const v = await Local.get(s, k);
+      if (v != null) await Cloud.put(s, k, s === 'ink' ? packInk(v) : v).catch(() => {});
+    }
+  }
+  const settings = await Local.get('meta', 'settings');
+  if (settings) await Cloud.put('meta', 'settings', settings).catch(() => {});
+  for (const b of books) {
+    const buf = await Local.get('files', b.id);
+    if (buf && !b.assetId) await storeBookFile(b, buf);
+    await Cloud.put('books', b.id, b).catch(() => {});
+  }
+  return true;
+}
+
+if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.claude) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('sw', e));
+  // عند نزول تحديث جديد يُعاد تحميل التطبيق مرة واحدة ليعمل بالنسخة الجديدة.
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && R.book == null) location.reload(); });
+}
+(async function boot() {
+  navigator.storage?.persist?.().catch(() => {});
+  main.replaceChildren(el('div', { class: 'empty' }, 'جارٍ تحميل مكتبتك…'));
+  await Local.open();
+  if (await Cloud.init()) {
+    const [cb, cn] = await Promise.all([Cloud.keys('books').catch(() => []), Cloud.keys('notes').catch(() => [])]);
+    if (!cb.length && !cn.length && await migrateLocalToCloud()) toast('نُقلت مكتبتك إلى حسابك في Claude.');
+  }
+  const [books, shelves, notes, marks, daily, settings] = await Promise.all(
+    [Store.all('books'), Store.all('shelves'), Store.all('notes'), Store.all('marks'), Store.all('daily'), Store.get('meta', 'settings')]);
+  S.books = books; S.shelves = shelves; S.notes = notes; S.marks = marks;
+  for (const d of daily) S.daily[d.date] = d;
+  for (const n of S.notes) for (const pg of n.pages) pg.id ||= uid();
+  await Promise.all(S.notes.flatMap((n) => n.pages.map(async (pg) => {
+    const ink = await Store.get('ink', 'np:' + pg.id);
+    pg.strokes = ink || pg.strokes || [];
+  })));
+  if (settings) S.settings = { ...structuredClone(DEFAULTS), ...settings, pen: { ...DEFAULTS.pen, ...(settings.pen || {}) } };
+  applySkin();
+  setSaveState('saved');
+  showView('library');
+  if (!S.settings.seeded) {
+    S.settings.seeded = true; saveSettings();
+    try {
+      const res = await fetch('samples/sample.pdf');
+      if (res.ok && !S.books.length) await addBook(new File([await res.blob()], 'sample.pdf'), 'كتاب تجريبي: فن القراءة');
+    } catch {}
+    if (!S.notes.length) {
+      newNote({ title: 'مثال: كيف أستخدم رفّ', pages: [{ strokes: [], text:
+        'هذه ملاحظة تجريبية يمكنك حذفها.\n\n• افتح «كتاب تجريبي» من المكتبة، ثم اضغط زر النص (T) واختر «استخراج نص هذه الصفحة».\n• حدّد جملة لتظهر أدوات التلوين والتسطير والترجمة والملاحظة.\n• اضغط زر القلم لتكتب على الصفحة بـ Apple Pencil.\n• في الدفتر اختر «رسم بالقلم» لتكتب بخط يدك.\n• أنشئ رفوفًا من أعلى المكتبة، واختر شكل كل رف من زر «تخصيص».' }] });
+    }
+    showView(S.view);
+  }
+})();
