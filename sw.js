@@ -1,6 +1,6 @@
 // يحفظ ملفات التطبيق على الجهاز ليفتح فورًا ويعمل دون إنترنت.
 // غيّر VERSION عند كل تحديث لتنزل النسخة الجديدة.
-const VERSION = 'raff-v1';
+const VERSION = 'raff-v2';
 const FONTS = 'raff-fonts';
 const CORE = [
   './', './index.html', './app.js', './manifest.webmanifest',
@@ -8,7 +8,7 @@ const CORE = [
   './vendor/pdf.min.js', './vendor/pdf.worker.min.js',
   './vendor/tesseract/tesseract.min.js', './vendor/tesseract/worker.min.js', './vendor/tesseract/worker-wrap.js',
   './vendor/tesseract/tesseract-core-simd-lstm.wasm.js', './vendor/tesseract/tesseract-core-lstm.wasm.js',
-  './vendor/tessdata/ara-traineddata.wasm', './samples/sample.pdf',
+  './vendor/tessdata/ara-traineddata.wasm', './vendor/tessdata/eng-traineddata.wasm', './samples/sample.pdf',
 ];
 
 self.addEventListener('install', (e) => {
