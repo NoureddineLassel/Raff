@@ -638,16 +638,17 @@ function closeReader() {
   readerEl.hidden = true; readerEl.replaceChildren();
   if (R.pdf) R.pdf.destroy();
   R.pdf = null; R.book = null; R.slots = []; R.activeInk = null;
-  pageCache.clear();
+  pageCache.clear(); textCache.clear();
   showView(S.view);
 }
+const inkInfo = (strokes) => ({ count: strokes.length, colors: [...new Set(strokes.map((k) => colorCat(k.t === 'eraser' ? '' : k.c)))] });
 async function buildInkIndex() {
   R.inkIndex = new Map();
   const pre = R.book.id + ':';
   for (const k of await Store.keys('ink')) {
     if (!String(k).startsWith(pre)) continue;
     const v = await Store.get('ink', k);
-    if (v && v.length) R.inkIndex.set(+String(k).slice(pre.length), v.length);
+    if (v && v.length) R.inkIndex.set(+String(k).slice(pre.length), inkInfo(v));
   }
 }
 function buildReader() {
@@ -678,11 +679,10 @@ function buildReader() {
   const bottom = el('div', { class: 'r-bottom' }, E.range, E.pct);
   readerEl.replaceChildren(top, E.body, bottom);
   setupDrag(E);
-  let lastW = 0, lastH = 0;
   new ResizeObserver(debounce(() => {
-    const r = E.stage.getBoundingClientRect();
-    if (!R.book || R.turning || (Math.abs(r.width - lastW) < 2 && Math.abs(r.height - lastH) < 2)) return;
-    lastW = r.width; lastH = r.height; layout();
+    const r = E.stage.getBoundingClientRect(), last = R.stageSize || { w: 0, h: 0 };
+    if (!R.book || R.turning || (Math.abs(r.width - last.w) < 2 && Math.abs(r.height - last.h) < 2)) return;
+    layout();
   }, 150)).observe(E.stage);
   setPanel(R.panel, true);
 }
@@ -696,6 +696,7 @@ async function layout() {
   R.page = start;
   const vp = (await R.pdf.getPage(start)).getViewport({ scale: 1 });
   const cs = getComputedStyle(E.stage), sr = E.stage.getBoundingClientRect();
+  R.stageSize = { w: sr.width, h: sr.height };
   const aw = sr.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   const ah = sr.height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
   if (aw <= 0 || ah <= 0) return;
@@ -715,15 +716,18 @@ function buildSlots() {
     const canvas = el('canvas', { class: 'pdf' });
     const inkHost = el('div');
     const flag = el('div', { class: 'bookmark-flag', hidden: true });
-    const node = el('div', { class: 'pg', 'data-side': side, style: `left:${side === 'right' ? w : 0}px;width:${w}px;height:${h}px` }, canvas, inkHost, flag);
+    const hl = el('div', { class: 'hl-layer' });
+    const tl = el('div', { class: 'textLayer' });
+    const node = el('div', { class: 'pg', 'data-side': side, style: `left:${side === 'right' ? w : 0}px;width:${w}px;height:${h}px` }, canvas, hl, tl, inkHost, flag);
     E.bookEl.append(node);
-    const slot = { side, node, canvas, flag, page: null };
+    const slot = { side, node, canvas, hl, tl, flag, page: null };
+    bindTextLayer(tl);
     slot.ink = new Ink(inkHost, {
       onStart: (k) => { R.activeInk = k; },
       onCommit: (strokes) => {
         if (slot.page == null) return;
         const k = pageKey(slot.page);
-        if (strokes.length) R.inkIndex.set(slot.page, strokes.length); else R.inkIndex.delete(slot.page);
+        if (strokes.length) R.inkIndex.set(slot.page, inkInfo(strokes)); else R.inkIndex.delete(slot.page);
         saveLater('ink:' + k, () => Store.put('ink', k, strokes.slice()), 300);
         changed('ink');
         if (R.drawer) renderDrawer();
@@ -767,32 +771,129 @@ async function pageSnapshot(n) {
   const live = R.slots.find((s) => s.page === n);
   if (live) return slotSnapshot(live);
   const base = await pageCanvas(n);
-  const strokes = await Store.get('ink', pageKey(n));
-  if (!strokes || !strokes.length) return base;
+  const strokes = (await Store.get('ink', pageKey(n))) || [];
+  if (!strokes.length && !pdfMarks(n).length) return base;
   const c = document.createElement('canvas'); c.width = base.width; c.height = base.height;
   const ctx = c.getContext('2d'); ctx.drawImage(base, 0, 0);
-  drawStrokes(ctx, strokes, R.size.w, R.size.h);
+  drawPageMarks(ctx, n);
+  if (strokes.length) drawStrokes(ctx, strokes, R.size.w, R.size.h);
   return c;
 }
 function slotSnapshot(slot) {
   if (slot.page == null) return null;
   const c = document.createElement('canvas'); c.width = slot.canvas.width; c.height = slot.canvas.height;
   const ctx = c.getContext('2d'); ctx.drawImage(slot.canvas, 0, 0);
+  drawPageMarks(ctx, slot.page);
   if (slot.ink.strokes.length) drawStrokes(ctx, slot.ink.strokes, R.size.w, R.size.h);
   return c;
 }
 async function fillSlot(slot, n) {
   slot.page = n ?? null;
   slot.node.classList.toggle('blank', !n);
+  slot.tl.replaceChildren(); slot.hl.replaceChildren(); slot.hasText = false;
   if (!n) { slot.canvas.width = 1; slot.canvas.height = 1; slot.ink.load([]); slot.flag.hidden = true; return; }
   const src = await pageCanvas(n);
   if (slot.page !== n) return;
   if (slot.canvas.width !== src.width || slot.canvas.height !== src.height) { slot.canvas.width = src.width; slot.canvas.height = src.height; }
   slot.canvas.getContext('2d').drawImage(src, 0, 0);
   slot.ink.resize();
+  renderPageMarks(slot);
   const strokes = (await Store.get('ink', pageKey(n))) || [];
   if (slot.page === n) slot.ink.load(strokes);
   slot.flag.hidden = !R.book.bookmarks.includes(n);
+  renderTextLayer(slot, n);
+}
+
+// ---------- Selectable text on the page ----------
+// في ملفات PDF النصية تُرسم فوق الصفحة طبقة نص شفافة، فيُحدَّد النص ويُلوَّن ويُترجم مباشرة من الكتاب.
+const textCache = new Map();
+function pageTextContent(n) {
+  const k = `${R.book.id}:${n}`;
+  if (!textCache.has(k)) textCache.set(k, R.pdf.getPage(n).then((p) => p.getTextContent()).catch(() => null));
+  return textCache.get(k);
+}
+async function renderTextLayer(slot, n) {
+  const tc = await pageTextContent(n);
+  if (!tc || slot.page !== n) return;
+  if (tc.items.reduce((a, it) => a + (it.str ? it.str.trim().length : 0), 0) < 10) return; // صفحة مصوّرة
+  const page = await R.pdf.getPage(n);
+  const vp = page.getViewport({ scale: R.size.w / page.getViewport({ scale: 1 }).width });
+  slot.tl.replaceChildren();
+  slot.tl.style.setProperty('--scale-factor', vp.scale);
+  await pdfjsLib.renderTextLayer({ textContentSource: tc, container: slot.tl, viewport: vp, textDivs: [] }).promise.catch(() => {});
+  if (slot.page !== n) return;
+  reorderTextLayer(slot.tl);
+  slot.tl.append(el('div', { class: 'endOfContent' }));
+  slot.hasText = true;
+}
+// كما في قارئ pdf.js: حين يمرّ السحب فوق الفراغات بين الكلمات لا يقفز التحديد إلى آخر الصفحة
+function bindTextLayer(tl) {
+  tl.addEventListener('pointerdown', (e) => {
+    const end = tl.querySelector('.endOfContent'); if (!end) return;
+    if (e.target !== tl) {
+      const b = tl.getBoundingClientRect();
+      end.style.top = (Math.max(0, (e.clientY - b.top) / b.height) * 100).toFixed(2) + '%';
+    }
+    end.classList.add('active');
+  });
+  const reset = () => { const end = tl.querySelector('.endOfContent'); if (end) { end.style.top = ''; end.classList.remove('active'); } };
+  document.addEventListener('pointerup', reset);
+  document.addEventListener('pointercancel', reset);
+}
+const pdfMarks = (page) => S.marks.filter((m) => m.bookId === R.book?.id && m.page === page && m.rects);
+function renderPageMarks(slot) {
+  slot.hl.replaceChildren();
+  if (!slot.page) return;
+  for (const m of pdfMarks(slot.page)) for (const [x, y, w, h] of m.rects) {
+    slot.hl.append(el('i', { 'data-id': m.id, 'data-style': m.style, 'data-color': m.color, class: m.note ? 'has-note' : null,
+      style: `left:${x * 100}%;top:${y * 100}%;width:${w * 100}%;height:${h * 100}%` }));
+  }
+}
+function refreshPageMarks() { R.slots.forEach(renderPageMarks); }
+/** يرسم تظليلات الصفحة على صورتها، لوجهَي الورقة أثناء التقليب. */
+function drawPageMarks(ctx, page) {
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  ctx.save(); ctx.globalCompositeOperation = 'multiply';
+  for (const m of pdfMarks(page)) for (const [x, y, w, h] of m.rects) {
+    if (m.style === 'underline') { ctx.fillStyle = COLORS[m.color] || '#5AA2EC'; ctx.fillRect(x * W, (y + h) * H - 3, w * W, 3); }
+    else { ctx.globalAlpha = 0.45; ctx.fillStyle = COLORS[m.color] || '#F2C230'; ctx.fillRect(x * W, y * H, w * W, h * H); ctx.globalAlpha = 1; }
+  }
+  ctx.restore();
+}
+/** نص التحديد بترتيب القراءة، مأخوذًا من مواضع الكلمات على الصفحة. */
+function selectedPageText(range, tl) {
+  const items = [...tl.querySelectorAll('span')].filter((sp) => sp.firstChild?.nodeType === 3 && range.intersectsNode(sp)).map((sp) => {
+    const tn = sp.firstChild; let a = 0, z = tn.length;
+    if (range.startContainer === tn) a = range.startOffset;
+    if (range.endContainer === tn) z = range.endOffset;
+    const r = sp.getBoundingClientRect();
+    return { text: tn.data.slice(a, z).replace(/[\u0000-\u001f\u200b\ufeff]/g, '').trim(), bbox: { x0: r.left, x1: r.right }, cy: r.top + r.height / 2, h: r.height };
+  }).filter((it) => it.text);
+  return readingLines(items).map(joinByGap).join(' ').replace(/\s+/g, ' ').trim();
+}
+/** يعيد ترتيب كلمات طبقة النص بترتيب القراءة، فيتبع التحديد الطبيعي اتجاه السطر العربي. */
+function reorderTextLayer(tl) {
+  const items = [...tl.querySelectorAll('span')].filter((sp) => sp.firstChild?.nodeType === 3 && sp.textContent.trim()).map((sp) => {
+    const r = sp.getBoundingClientRect();
+    return { sp, text: sp.textContent, bbox: { x0: r.left, x1: r.right }, cy: r.top + r.height / 2, h: r.height };
+  });
+  tl.replaceChildren();
+  for (const line of readingLines(items)) { tl.append(...line.map((i) => i.sp)); tl.append(el('br')); }
+}
+/** يدمج مستطيلات التحديد المتجاورة على السطر الواحد، ويقصّها على حدود الصفحة. */
+function selectionRects(range, box) {
+  const rs = [...range.getClientRects()]
+    .map((r) => ({ l: Math.max(r.left, box.left), t: Math.max(r.top, box.top), r: Math.min(r.right, box.right), b: Math.min(r.bottom, box.bottom) }))
+    .filter((r) => r.r - r.l > 1 && r.b - r.t > 2)
+    .sort((a, z) => a.t - z.t || a.l - z.l);
+  const out = [];
+  for (const r of rs) {
+    const h = r.b - r.t;
+    const same = out.find((o) => Math.abs((o.t + o.b) / 2 - (r.t + r.b) / 2) < Math.min(h, o.b - o.t) * 0.5 && r.l <= o.r + h * 0.8 && r.r >= o.l - h * 0.8);
+    if (same) { same.l = Math.min(same.l, r.l); same.r = Math.max(same.r, r.r); same.t = Math.min(same.t, r.t); same.b = Math.max(same.b, r.b); }
+    else out.push({ ...r });
+  }
+  return out.map((r) => [(r.l - box.left) / box.width, (r.t - box.top) / box.height, (r.r - r.l) / box.width, (r.b - r.t) / box.height].map((v) => +v.toFixed(4)));
 }
 async function showSpread(start) {
   const pages = spreadPages(start);
@@ -959,13 +1060,17 @@ function setupDrag(E) {
     if (R.turning || e.button > 0 || e.pointerType === 'pen') return;
     if (R.pen && !(e.pointerType === 'touch' && S.settings.penOnly)) return;
     if (e.target.closest('.pen-bar, .thumbs')) return;
-    st = { x: e.clientX, y: e.clientY, id: e.pointerId, dir: 0, p: 0, vx: 0, lastX: e.clientX, lastT: performance.now() };
+    const sel = getSelection();
+    // سحب الفأرة فوق النص، أو سحب مقابض التحديد، يحدّد النص ولا يقلب الصفحة
+    const noDrag = (e.pointerType === 'mouse' && !!e.target.closest('.textLayer span')) || (sel && !sel.isCollapsed && !!sel.anchorNode && E.bookEl.contains(sel.anchorNode));
+    st = { x: e.clientX, y: e.clientY, id: e.pointerId, dir: 0, p: 0, vx: 0, lastX: e.clientX, lastT: performance.now(), t0: performance.now(), noDrag };
   });
   E.stage.addEventListener('pointermove', async (e) => {
     if (!st || e.pointerId !== st.id) return;
     const dx = e.clientX - st.x, dy = e.clientY - st.y;
     const now = performance.now();
     st.vx = (e.clientX - st.lastX) / Math.max(1, now - st.lastT); st.lastX = e.clientX; st.lastT = now;
+    if (st.noDrag) return;
     if (!st.dir) {
       if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy)) { if (Math.abs(dy) > 24) st = null; return; }
       st.dir = dx > 0 ? 1 : -1; suppressClick = true;
@@ -991,11 +1096,33 @@ function setupDrag(E) {
     }
     const dx = e.clientX - s.x, dy = e.clientY - s.y;
     if (s.dir && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) goto(R.page + s.dir * stepSize(), s.dir);
+    else if (!s.dir && Math.hypot(dx, dy) < 10 && performance.now() - s.t0 < 450) handleTap(e);
   };
   E.stage.addEventListener('pointerup', end);
   E.stage.addEventListener('pointercancel', end);
 }
 
+function handleTap(e) {
+  const sel = getSelection();
+  if (sel && !sel.isCollapsed && sel.rangeCount) {
+    // نقرة داخل التحديد الحالي تتركه كما هو، ونقرة خارجه تلغيه ثم تُعامل كنقرة عادية
+    const inside = [...sel.getRangeAt(0).getClientRects()].some((r) => e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+    if (inside) return;
+    sel.removeAllRanges();
+  }
+  for (const slot of R.slots) {
+    if (!slot.page) continue;
+    const box = slot.node.getBoundingClientRect();
+    const x = (e.clientX - box.left) / box.width, y = (e.clientY - box.top) / box.height;
+    if (x < 0 || x > 1 || y < 0 || y > 1) continue;
+    const m = pdfMarks(slot.page).find((k) => k.rects.some(([rx, ry, rw, rh]) => x >= rx && x <= rx + rw && y >= ry - 0.005 && y <= ry + rh + 0.005));
+    if (m) { setTimeout(() => showSelBar(slot.hl.querySelector(`[data-id="${m.id}"]`).getBoundingClientRect(), m), 0); return; }
+  }
+  if (R.pen) return;
+  const sr = R.els.stage.getBoundingClientRect(), fx = (e.clientX - sr.left) / sr.width;
+  if (fx < 0.18) goto(R.page + stepSize(), 1);
+  else if (fx > 0.82) goto(R.page - stepSize(), -1);
+}
 function toggleMode() {
   S.settings.pageMode = R.mode === 'double' ? 'single' : 'double';
   saveSettings();
@@ -1077,14 +1204,28 @@ document.addEventListener('keydown', (e) => {
   if (readerEl.hidden || /input|textarea/i.test(e.target.tagName)) return;
   if (e.key === 'ArrowLeft') goto(R.page + stepSize(), 1);
   else if (e.key === 'ArrowRight') goto(R.page - stepSize(), -1);
-  else if (e.key === 'Escape') { if ($('.sel-bar') || $('.pop')) hideSelBar(); else if (R.drawer) setDrawer(false); else closeReader(); }
+  else if (e.key === 'Escape') { if ($('.sel-bar') || $('.pop')) { hideSelBar(); getSelection().removeAllRanges(); } else if (R.drawer) setDrawer(false); else closeReader(); }
   else if ((e.metaKey || e.ctrlKey) && e.key === 'z' && R.pen) { e.preventDefault(); const k = R.activeInk || R.slots[0]?.ink; e.shiftKey ? k?.redo() : k?.undo(); }
 });
 
 // ---------- Annotations drawer ----------
 // إطار جانبي على اليسار يجمع علامات الكتاب وتظليلاته وملاحظاته وصفحات القلم، مع تصفية حسب النوع واللون.
 const DRAWER_TYPES = [['all', 'الكل'], ['bookmark', 'العلامات'], ['highlight', 'التظليل'], ['underline', 'التسطير'], ['note', 'الملاحظات'], ['ink', 'كتابة القلم']];
-const COLOR_NAMES = { yellow: 'أصفر', green: 'أخضر', pink: 'وردي', blue: 'أزرق' };
+const COLOR_NAMES = { yellow: 'أصفر', green: 'أخضر', pink: 'وردي', blue: 'أزرق', red: 'أحمر', black: 'أسود' };
+// ألوان التصفية تشمل ألوان التظليل وألوان أقلام الكتابة معًا
+const FILTER_COLORS = { yellow: '#F2C230', green: '#6CC35E', pink: '#EC6E9F', blue: '#5AA2EC', red: '#B3362F', black: '#1C2220' };
+const COLOR_REFS = [['yellow', '#F2C230'], ['green', '#6CC35E'], ['green', '#1E6A64'], ['pink', '#EC6E9F'], ['pink', '#F07AA5'], ['blue', '#5AA2EC'], ['blue', '#2C6FB8'], ['red', '#B3362F'], ['black', '#1C2220']];
+function colorCat(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || ''); if (!m) return 'black';
+  const n = parseInt(m[1], 16), rgb = [n >> 16, (n >> 8) & 255, n & 255];
+  let best = 'black', bd = Infinity;
+  for (const [k, h] of COLOR_REFS) {
+    const v = parseInt(h.slice(1), 16), d = (rgb[0] - (v >> 16)) ** 2 + (rgb[1] - ((v >> 8) & 255)) ** 2 + (rgb[2] - (v & 255)) ** 2;
+    if (d < bd) { bd = d; best = k; }
+  }
+  return best;
+}
+const itemColors = (it) => (it.g ? [it.g.color] : it.type === 'ink' ? it.colors : ['red']);
 function setDrawer(on) {
   R.drawer = on;
   R.els.drawerBtn.setAttribute('aria-pressed', String(on));
@@ -1095,13 +1236,13 @@ function drawerItems() {
   const b = R.book, items = [];
   for (const n of b.bookmarks) items.push({ type: 'bookmark', page: n });
   for (const g of groupMarks().filter((x) => x.bookId === b.id)) items.push({ type: g.style === 'underline' ? 'underline' : 'highlight', page: g.page, g });
-  for (const [n, count] of R.inkIndex) items.push({ type: 'ink', page: n, count });
+  for (const [n, info] of R.inkIndex) items.push({ type: 'ink', page: n, count: info.count, colors: info.colors });
   const order = { bookmark: 0, ink: 1, highlight: 2, underline: 2 };
   return items.sort((a, z) => a.page - z.page || order[a.type] - order[z.type] || (a.g?.created || 0) - (z.g?.created || 0));
 }
 function matchesFilter(it) {
   const { type, colors } = R.filt;
-  if (colors.size && !(it.g && colors.has(it.g.color))) return false;
+  if (colors.size && !itemColors(it).some((c) => colors.has(c))) return false;
   if (type === 'all') return true;
   if (type === 'note') return !!it.g?.note;
   return it.type === type;
@@ -1115,7 +1256,8 @@ function renderDrawer() {
     ...DRAWER_TYPES.map(([k, l]) => el('button', { class: 'dr-chip', 'aria-pressed': String(R.filt.type === k), onclick: () => { R.filt.type = k; renderDrawer(); } }, l, el('span', { class: 'n num' }, fmt(count(k))))));
   const dots = el('div', { class: 'dr-colors', role: 'group', 'aria-label': 'تصفية حسب اللون' },
     el('span', { class: 'muted' }, 'اللون:'),
-    ...Object.entries(COLORS).map(([k, c]) => el('button', { class: 'dot', style: `background:${c}`, 'aria-pressed': String(R.filt.colors.has(k)), 'aria-label': COLOR_NAMES[k], title: COLOR_NAMES[k],
+    ...Object.entries(FILTER_COLORS).map(([k, c]) => el('button', { class: 'dot', style: `background:${c}`, 'aria-pressed': String(R.filt.colors.has(k)), 'aria-label': COLOR_NAMES[k],
+      title: `${COLOR_NAMES[k]} (${all.filter((it) => itemColors(it).includes(k)).length})`,
       onclick: () => { R.filt.colors.has(k) ? R.filt.colors.delete(k) : R.filt.colors.add(k); renderDrawer(); } })),
     R.filt.colors.size || R.filt.type !== 'all' ? el('button', { class: 'btn ghost', style: 'min-height:32px;padding:2px 10px;font-size:13px', onclick: () => { R.filt = { type: 'all', colors: new Set() }; renderDrawer(); } }, 'إلغاء التصفية') : null);
   const ul = el('div', { class: 'dr-list' });
@@ -1132,16 +1274,17 @@ function drawerItem(it, current) {
     body = el('div', { class: 'dr-body' }, el('b', {}, 'علامة مرجعية'), meta('اضغط للانتقال'));
     thumb = el('img', { class: 'dr-thumb', alt: '' });
   } else if (it.type === 'ink') {
-    body = el('div', { class: 'dr-body' }, el('b', {}, 'كتابة بالقلم'), meta(`${fmt(it.count)} ${it.count === 1 ? 'خط' : 'خطوط'}`));
+    body = el('div', { class: 'dr-body' }, el('b', {}, 'كتابة بالقلم'), meta(`${fmt(it.count)} ${it.count === 1 ? 'خط' : 'خطوط'}`),
+      el('span', { class: 'dr-inks' }, ...it.colors.map((c) => el('i', { style: `background:${FILTER_COLORS[c]}`, title: COLOR_NAMES[c] }))));
     thumb = el('img', { class: 'dr-thumb', alt: '' });
   } else {
     const g = it.g;
     body = el('div', { class: 'dr-body' },
       el('q', { dir: isArabic(g.text) ? 'rtl' : 'ltr' }, g.text.length > 160 ? g.text.slice(0, 160) + '…' : g.text),
       g.note ? el('span', { class: 'dr-note' }, '✎ ' + g.note) : null,
-      meta(`${it.type === 'underline' ? 'تسطير' : 'تظليل'} ${COLOR_NAMES[g.color] || ''}`));
+      meta(`${it.type === 'underline' ? 'تسطير' : 'تظليل'} ${COLOR_NAMES[g.color] || ''}${g.rects ? ' · على الصفحة' : ''}`));
   }
-  const row = el('div', { class: 'dr-item', 'data-type': it.type, 'data-color': it.g?.color || '', 'aria-current': String(current) },
+  const row = el('div', { class: 'dr-item', 'data-type': it.type, 'data-color': it.g?.color || '', 'data-place': it.g?.rects ? 'page' : '', 'aria-current': String(current) },
     el('button', { class: 'dr-open', onclick: () => jumpTo(it) }, thumb, body));
   if (it.type === 'bookmark') row.append(el('button', { class: 'icon-btn dr-del', 'aria-label': 'إزالة العلامة', title: 'إزالة العلامة', onclick: () => {
     R.book.bookmarks = R.book.bookmarks.filter((n) => n !== it.page); saveBook(R.book); updateChrome(); renderDrawer();
@@ -1152,7 +1295,12 @@ function drawerItem(it, current) {
 async function jumpTo(it) {
   await goto(it.page);
   if (!it.g) return;
-  setDrawer(false); // الإطار يغطي لوحة النص، فيُغلق ليظهر التظليل
+  setDrawer(false); // الإطار يغطي جزءًا من الكتاب، فيُغلق ليظهر التظليل
+  if (it.g.rects) {
+    await new Promise((r) => setTimeout(r, 60));
+    R.slots.forEach((sl) => sl.hl.querySelectorAll(`[data-id="${it.g.id}"]`).forEach((x) => { x.classList.remove('flash'); void x.offsetWidth; x.classList.add('flash'); }));
+    return;
+  }
   if (!R.panel) setPanel(true, true);
   await loadPanel();
   const mk = $(`#ocrText mark[data-id="${it.g.id}"]`);
@@ -1289,14 +1437,32 @@ function overlapX(a, b) {
   return o <= 0 ? 0 : o / Math.max(1, Math.min(a.x1 - a.x0, b.x1 - b.x0));
 }
 /** يرتّب كلمات السطر من اليمين إلى اليسار، ويُبقي كل مقطع لاتيني متصل بترتيبه من اليسار إلى اليمين. */
-function orderWords(words) {
+function orderItems(words) {
   const out = []; let run = [];
   const flush = () => { out.push(...run.reverse()); run = []; };
   for (const w of [...words].sort((a, b) => b.bbox.x1 - a.bbox.x1)) {
     if (LATIN.test(w.text) && !ARABIC_CH.test(w.text)) run.push(w); else { flush(); out.push(w); }
   }
   flush();
-  return out.map((w) => w.text).join(' ');
+  return out;
+}
+const orderWords = (words) => orderItems(words).map((w) => w.text).join(' ');
+/** يجمع كلمات السطر الواحد في أسطر، ويرتّب كل سطر بترتيب القراءة (العربي من اليمين، واللاتيني من اليسار). */
+function readingLines(items) {
+  const lines = [];
+  for (const it of [...items].sort((p, q) => p.cy - q.cy)) {
+    const ln = lines.find((l) => Math.abs(l.cy - it.cy) < Math.min(l.h, it.h) * 0.5);
+    if (ln) ln.items.push(it); else lines.push({ cy: it.cy, h: it.h, items: [it] });
+  }
+  return lines.map((l) => (isArabic(l.items.map((i) => i.text).join('')) ? orderItems(l.items) : l.items.sort((p, q) => p.bbox.x0 - q.bbox.x0)));
+}
+/** يصل أجزاء السطر بمسافة فقط حيث توجد فجوة حقيقية على الصفحة. */
+function joinByGap(items) {
+  return items.reduce((acc, it, i) => {
+    if (!i) return it.text;
+    const p = items[i - 1], gap = Math.max(it.bbox.x0 - p.bbox.x1, p.bbox.x0 - it.bbox.x1);
+    return acc + (gap > Math.min(p.h, it.h) * 0.08 ? ' ' : '') + it.text;
+  }, '');
 }
 async function ocrLocal(canvas) {
   const { data } = await (await getTess('ara')).recognize(canvas);
@@ -1405,9 +1571,21 @@ function rangeParts(range) {
 document.addEventListener('selectionchange', debounce(() => {
   if (readerEl.hidden) return;
   const sel = getSelection(), root = $('#ocrText');
-  if (!root || !sel.rangeCount || sel.isCollapsed) return;
+  if (!sel.rangeCount || sel.isCollapsed) return;
   const range = sel.getRangeAt(0);
-  if (!root.contains(range.commonAncestorContainer)) return;
+  const startEl = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+  const tl = startEl?.closest?.('.textLayer');
+  if (tl) {
+    const slot = R.slots.find((x) => x.tl === tl);
+    const text = selectedPageText(range, tl) || sel.toString().replace(/\s+/g, ' ').trim();
+    if (!slot?.page || !text) return;
+    const rects = selectionRects(range, slot.node.getBoundingClientRect());
+    if (!rects.length) return;
+    curSel = { source: 'pdf', page: slot.page, rects, text, rect: range.getBoundingClientRect() };
+    showSelBar(curSel.rect, null);
+    return;
+  }
+  if (!root || !root.contains(range.commonAncestorContainer)) return;
   const parts = rangeParts(range); if (!parts.length) return;
   curSel = { parts, text: sel.toString().trim(), rect: range.getBoundingClientRect() };
   showSelBar(curSel.rect, null);
@@ -1442,6 +1620,17 @@ async function copyText(t) {
 function addMarks(style, color, keepBar) {
   if (!curSel) return null;
   const group = uid(), now = Date.now();
+  if (curSel.source === 'pdf') {
+    const m = { id: uid(), group, bookId: R.book.id, page: curSel.page, rects: curSel.rects, text: curSel.text, color, style, note: '', created: now };
+    S.marks.push(m); Store.put('marks', m.id, m);
+    S.settings.lastColor = color; saveSettings();
+    getSelection().removeAllRanges(); curSel = null;
+    refreshPageMarks();
+    if (R.drawer) renderDrawer();
+    if (!keepBar) hideSelBar();
+    changed('marks');
+    return group;
+  }
   for (const p of curSel.parts) {
     const m = { id: uid(), group, bookId: R.book.id, page: p.page, para: p.para, start: p.start, end: p.end, text: p.text, color, style, note: '', created: now };
     S.marks.push(m); Store.put('marks', m.id, m);
@@ -1457,6 +1646,7 @@ function addMarks(style, color, keepBar) {
 }
 function updateGroup(group, patch) {
   for (const m of S.marks.filter((x) => x.group === group)) { Object.assign(m, patch); Store.put('marks', m.id, m); refreshPara(m.page, m.para); }
+  refreshPageMarks();
   if (R.drawer) renderDrawer();
   if (patch.color) { S.settings.lastColor = patch.color; saveSettings(); }
   hideSelBar(); changed('marks');
@@ -1465,6 +1655,7 @@ function removeGroup(group) {
   const gone = S.marks.filter((x) => x.group === group);
   S.marks = S.marks.filter((x) => x.group !== group);
   gone.forEach((m) => { Store.del('marks', m.id); refreshPara(m.page, m.para); });
+  refreshPageMarks();
   if (R.drawer) renderDrawer();
   hideSelBar(); changed('marks'); toast('أُزيل التظليل.');
 }
@@ -1525,7 +1716,7 @@ function notePop(group, rect) {
   const ta = el('textarea', { 'aria-label': 'نص الملاحظة', placeholder: 'اكتب ملاحظتك… (تُحفظ تلقائيًا)', value: ms[0]?.note || '' });
   ta.addEventListener('input', () => {
     for (const m of ms) { m.note = ta.value; saveLater('mark:' + m.id, () => Store.put('marks', m.id, m), 400); }
-    saveLater('notepara:' + group, () => { ms.forEach((m) => refreshPara(m.page, m.para)); changed('marks'); if (R.drawer) renderDrawer(); }, 600);
+    saveLater('notepara:' + group, () => { ms.forEach((m) => refreshPara(m.page, m.para)); refreshPageMarks(); changed('marks'); if (R.drawer) renderDrawer(); }, 600);
   });
   const p = el('div', { class: 'pop', role: 'dialog', 'aria-label': 'ملاحظة' },
     el('h3', {}, el('span', {}, 'ملاحظة على التظليل'), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => { hideSelBar(); ms.forEach((m) => refreshPara(m.page, m.para)); } }, icon('close'))),
@@ -1565,7 +1756,7 @@ function renderNotes() {
     const groups = groupMarks().filter((g) => !q || (g.text + g.note).includes(q));
     groups.forEach((g) => {
       const b = S.books.find((x) => x.id === g.bookId);
-      list.append(el('button', { class: 'note-item anno-item', 'data-color': g.color, onclick: () => openReader(g.bookId, g.page, true) },
+      list.append(el('button', { class: 'note-item anno-item', 'data-color': g.color, onclick: () => openReader(g.bookId, g.page, !g.rects) },
         el('q', {}, g.text.length > 140 ? g.text.slice(0, 140) + '…' : g.text),
         g.note ? el('small', { style: 'white-space:normal;color:var(--ink)' }, '✎ ' + g.note) : null,
         el('small', {}, `${b?.title || 'كتاب محذوف'} · صفحة ${g.page}${g.style === 'underline' ? ' · تسطير' : ''}`)));

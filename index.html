@@ -244,6 +244,33 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
   background: linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.06) 30%, rgba(0,0,0,.22) 49%, rgba(255,255,255,.12) 51%, rgba(0,0,0,.06) 70%, rgba(0,0,0,0) 100%); }
 .book-view.turn-next { animation: turnNext .32s ease-out; }
 .book-view.turn-prev { animation: turnPrev .32s ease-out; }
+/* Highlights drawn on the page itself, and the invisible selectable text layer of text PDFs */
+.book-view .pg .hl-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; mix-blend-mode: multiply; }
+.hl-layer i { position: absolute; border-radius: 2px; }
+.hl-layer i[data-style="highlight"][data-color="yellow"] { background: var(--hl-yellow); }
+.hl-layer i[data-style="highlight"][data-color="green"] { background: var(--hl-green); }
+.hl-layer i[data-style="highlight"][data-color="pink"] { background: var(--hl-pink); }
+.hl-layer i[data-style="highlight"][data-color="blue"] { background: var(--hl-blue); }
+.hl-layer i[data-style="underline"] { border-bottom: 3px solid var(--ul-blue); border-radius: 0; }
+.hl-layer i[data-style="underline"][data-color="yellow"] { border-bottom-color: var(--ul-yellow); }
+.hl-layer i[data-style="underline"][data-color="green"] { border-bottom-color: var(--ul-green); }
+.hl-layer i[data-style="underline"][data-color="pink"] { border-bottom-color: var(--ul-pink); }
+.hl-layer i.has-note { box-shadow: inset 0 -2px 0 var(--accent); }
+.hl-layer i.flash { animation: flash 1.4s ease-out; }
+.book-view .pg .ink-layer { z-index: 3; }
+.book-view .pg .bookmark-flag { z-index: 4; }
+.textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; text-align: initial; -webkit-text-size-adjust: none; text-size-adjust: none; forced-color-adjust: none;
+  transform-origin: 0 0; z-index: 2; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+.textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer span.markedContent { top: 0; height: 0; }
+.textLayer ::selection { background: rgba(30, 106, 100, .3); }
+.textLayer br::selection { background: transparent; }
+.textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; -webkit-user-select: none; user-select: none; }
+.textLayer .endOfContent.active { top: 0; }
+.tap-zone { pointer-events: none; }
+.textLayer:empty { pointer-events: none; }
+.dr-inks { display: inline-flex; gap: 4px; }
+.dr-inks i { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,.15); }
 .leaf { position: absolute; top: 0; z-index: 6; pointer-events: none; transform-style: preserve-3d; }
 .leaf.mirror { transform: scaleX(-1); }
 .leaf .strip { position: absolute; top: 0; transform-style: preserve-3d; transform-origin: left center; will-change: transform; }
