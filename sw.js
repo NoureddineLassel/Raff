@@ -1,11 +1,11 @@
 // يحفظ ملفات التطبيق على الجهاز ليفتح فورًا ويعمل دون إنترنت.
 // غيّر VERSION عند كل تحديث لتنزل النسخة الجديدة.
-const VERSION = 'raff-v3';
+const VERSION = 'raff-v4';
 const FONTS = 'raff-fonts';
 const CORE = [
   './', './index.html', './app.js', './manifest.webmanifest',
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png',
-  './vendor/pdf.min.js', './vendor/pdf.worker.min.js',
+  './vendor/pdf.min.js', './vendor/pdf.worker.min.js', './vendor/anthropic-sdk.mjs',
   './vendor/tesseract/tesseract.min.js', './vendor/tesseract/worker.min.js', './vendor/tesseract/worker-wrap.js',
   './vendor/tesseract/tesseract-core-simd-lstm.wasm.js', './vendor/tesseract/tesseract-core-lstm.wasm.js',
   './vendor/tessdata/ara-traineddata.wasm', './vendor/tessdata/eng-traineddata.wasm', './samples/sample.pdf',

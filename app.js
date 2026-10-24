@@ -184,7 +184,7 @@ function setSaveState(st) {
 // ---------- App state ----------
 const DEFAULTS = {
   translateTo: 'en', ocrEngine: 'local', penOnly: true, readSize: 22, seeded: false,
-  pen: { tool: 'pen', color: '#1C2220', width: 3 }, lastColor: 'yellow',
+  pen: { tool: 'pen', color: '#1C2220', width: 3 }, lastColor: 'yellow', claudeKey: '', noKeyTranslator: 'claude',
   shelf: 'all', allTheme: 'walnut', skin: 'auto', pageMode: 'auto', turnAnim: 'curl',
 };
 const S = { books: [], shelves: [], notes: [], marks: [], customize: false, daily: {}, settings: structuredClone(DEFAULTS), view: 'library', noteId: null, notesTab: 'notebook', noteMode: 'type', noteQuery: '' };
@@ -1667,32 +1667,114 @@ function onMarkTap(e) {
 }
 const LANGS = { en: 'الإنجليزية', fr: 'الفرنسية', es: 'الإسبانية', tr: 'التركية', ar: 'العربية' };
 const LANG_EN = { en: 'English', fr: 'French', es: 'Spanish', tr: 'Turkish', ar: 'Arabic' };
+// ---------- Translation chain ----------
+// 1) المساعد الأكاديمي عبر Claude: داخل التطبيق بمفتاح API، أو بفتح Claude نفسه إن لم يوجد مفتاح.
+// 2) DeepL: يُفتح تطبيقه أو موقعه بالنص جاهزًا (خدمته لا تقبل الاتصال المباشر من تطبيقات الويب).
+// 3) غيرهما: ترجمة سريعة داخل التطبيق (MyMemory)، ثم ترجمة Google.
+const ACADEMIC_SYSTEM = `You are a senior academic translator specialising in political science, international relations, security and strategic studies, international law, diplomacy and foreign policy.
+Translate the user's text into the requested target language with the precision expected in peer-reviewed scholarship:
+- Use the established terminology of the field as it appears in reputable academic literature in the target language (for Arabic, the terms used in Arab universities and journals), not literal word-for-word renderings.
+- Preserve meaning, nuance, hedging and register; keep proper names, acronyms and titles accurate, adding the original term in parentheses after a key technical term when that helps the reader.
+- Keep the paragraph structure.
+- If the text is a single term or short expression, give its best equivalent first, then up to three alternative specialised equivalents, each with a few words on when it is used.
+Output only the translation (or the term list), with no preamble.`;
+const LANG_DEEPL = { en: 'en', fr: 'fr', es: 'es', tr: 'tr', ar: 'ar' };
+const claudeAppUrl = (text, to) => `https://claude.ai/new?q=${encodeURIComponent(`ترجم النص التالي ترجمة أكاديمية متخصصة إلى ${LANGS[to]}:\n\n${text.slice(0, 6000)}`)}`;
+const deeplUrl = (text, from, to) => `https://www.deepl.com/translator#${from}/${LANG_DEEPL[to]}/${encodeURIComponent(text.slice(0, 5000).replace(/\//g, '\\/'))}`;
+const googleUrl = (text, to) => `https://translate.google.com/?sl=auto&tl=${to}&text=${encodeURIComponent(text.slice(0, 4000))}&op=translate`;
+let anthropicMod = null;
+async function claudeClient() {
+  anthropicMod ||= import('./vendor/anthropic-sdk.mjs').catch((e) => { anthropicMod = null; throw e; });
+  const { default: Anthropic } = await anthropicMod;
+  return { Anthropic, client: new Anthropic({ apiKey: S.settings.claudeKey, dangerouslyAllowBrowser: true, maxRetries: 1 }) };
+}
+/** ترجمة أكاديمية داخل التطبيق عبر Claude، تُعرض أثناء كتابتها. */
+async function translateClaudeApi(text, to, onText, signal) {
+  const { Anthropic, client } = await claudeClient();
+  try {
+    const stream = client.beta.messages.stream({
+      model: 'claude-opus-5-5',
+      max_tokens: 16000,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: 'low' },
+      system: ACADEMIC_SYSTEM,
+      messages: [{ role: 'user', content: `Target language: ${LANG_EN[to]}\n\n<text>\n${text}\n</text>` }],
+    }, { signal });
+    stream.on('text', (_delta, snapshot) => onText(snapshot));
+    const msg = await stream.finalMessage();
+    if (msg.stop_reason === 'refusal') throw Object.assign(new Error('refusal'), { reason: 'رفض الطلب' });
+    return msg.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+  } catch (e) {
+    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) e.reason = 'مفتاح Claude غير صالح';
+    else if (e instanceof Anthropic.RateLimitError) e.reason = 'تجاوز حد الاستخدام مؤقتًا';
+    else if (e instanceof Anthropic.APIConnectionError) e.reason = 'تعذّر الاتصال';
+    else if (e instanceof Anthropic.APIError) e.reason = 'خطأ من خدمة Claude';
+    throw e;
+  }
+}
 async function translatePop(text, rect) {
   hideSelBar();
   const to = isArabic(text) ? S.settings.translateTo : 'ar';
+  const from = isArabic(text) ? 'ar' : 'en';
+  const online = navigator.onLine !== false;
+  const hasKey = !!S.settings.claudeKey;
+  // بلا مفتاح: يُفتح المترجم الافتراضي الآن، ما دامت هذه نقرة المستخدم نفسها
+  const noKey = S.settings.noKeyTranslator || 'claude';
+  if (!hasKey && !window.claude && online) {
+    if (noKey === 'claude') window.open(claudeAppUrl(text, to), '_blank', 'noopener');
+    else if (noKey === 'deepl') window.open(deeplUrl(text, from, to), '_blank', 'noopener');
+  }
+  const ctrl = new AbortController();
+  const badge = el('span', { class: 'tr-badge' }, '');
   const out = el('div', { class: 'out', dir: to === 'ar' ? 'rtl' : 'ltr', lang: to }, 'جارٍ الترجمة…');
-  const gUrl = `https://translate.google.com/?sl=auto&tl=${to}&text=${encodeURIComponent(text.slice(0, 4000))}&op=translate`;
+  const note = el('div', { class: 'tr-note', hidden: true });
+  const link = (href, label, primary) => el('a', { class: 'btn' + (primary ? '' : ' ghost'), href, target: '_blank', rel: 'noopener' }, label);
   const p = el('div', { class: 'pop', role: 'dialog', 'aria-label': 'الترجمة' },
-    el('h3', {}, el('span', {}, `الترجمة إلى ${LANGS[to]}`), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: hideSelBar }, icon('close'))),
-    el('div', { class: 'src', lang: 'ar' }, text), out,
-    el('div', { class: 'row', style: 'margin-top:12px' },
-      el('button', { class: 'btn', onclick: async () => { try { await navigator.clipboard.writeText(out.textContent); toast('نُسخت الترجمة.'); } catch { toast('تعذّر النسخ.'); } } }, icon('copy'), 'نسخ الترجمة'),
-      el('a', { class: 'btn ghost', href: gUrl, target: '_blank', rel: 'noopener' }, 'فتح في ترجمة Google')));
+    el('h3', {}, el('span', {}, `الترجمة إلى ${LANGS[to]}`), badge,
+      el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => { ctrl.abort(); hideSelBar(); } }, icon('close'))),
+    el('div', { class: 'src', lang: from }, text), out, note,
+    el('div', { class: 'row tr-actions' },
+      el('button', { class: 'btn', onclick: async () => { try { await navigator.clipboard.writeText(out.textContent); toast('نُسخت الترجمة.'); } catch { toast('تعذّر النسخ.'); } } }, icon('copy'), 'نسخ'),
+      link(claudeAppUrl(text, to), 'المساعد الأكاديمي في Claude', !hasKey),
+      link(deeplUrl(text, from, to), 'DeepL'),
+      link(googleUrl(text, to), 'Google')));
   place(p, rect); pop = p;
+  const setBadge = (t) => { badge.textContent = t; };
+  const fallbackNote = (t) => { note.hidden = false; note.textContent = t; };
+  if (!online) { out.textContent = 'الترجمة تحتاج اتصالًا بالإنترنت.'; return; }
+
+  // 1) Claude داخل التطبيق: عبر حساب Claude حين يُفتح التطبيق داخله، أو بمفتاح API
   const sample = await cap('sample');
-  if (!sample) {
-    try { out.textContent = await translateFree(text, isArabic(text) ? 'ar' : 'Autodetect', to); }
-    catch { out.textContent = navigator.onLine ? 'تعذّرت الترجمة الآن. حاول بعد قليل أو افتح ترجمة Google.' : 'الترجمة تحتاج اتصالًا بالإنترنت.'; }
-    return;
+  if (sample || hasKey) {
+    setBadge('المساعد الأكاديمي · Claude');
+    try {
+      let result;
+      if (sample) {
+        result = (await sample(`${ACADEMIC_SYSTEM}\n\nTarget language: ${LANG_EN[to]}\n<text>\n${text}\n</text>`, {
+          modelTier: 'quick', onText: ({ text: t }) => { if (t) out.textContent = t; } })).text.trim();
+      } else {
+        result = await translateClaudeApi(text, to, (t) => { if (t) out.textContent = t; }, ctrl.signal);
+      }
+      if (pop !== p) return;
+      out.textContent = result;
+      return;
+    } catch (e) {
+      if (ctrl.signal.aborted || pop !== p) return;
+      console.warn('claude translation failed', e);
+      fallbackNote(`تعذّرت الترجمة عبر Claude (${e.reason || 'خطأ غير متوقع'}). هذه ترجمة بديلة، ويمكنك المتابعة في DeepL.`);
+      p.querySelector('.tr-actions a[href*="deepl"]').classList.remove('ghost');
+    }
+  } else if (noKey === 'claude') {
+    fallbackNote('فُتح المساعد الأكاديمي في Claude بالنص المحدد. هذه ترجمة سريعة للاطلاع إلى أن تعود.');
+  } else if (noKey === 'deepl') {
+    fallbackNote('فُتح DeepL بالنص المحدد. هذه ترجمة سريعة للاطلاع إلى أن تعود.');
   }
-  try {
-    const res = await sample(`Translate the text between the markers into ${LANG_EN[to]}. Keep the meaning and tone. Output only the translation.\n<<<\n${text}\n>>>`, {
-      modelTier: 'quick', onText: ({ text: t }) => { if (t) out.textContent = t; },
-    });
-    out.textContent = res.text.trim();
-  } catch (e) {
-    out.textContent = e && e.code === 'not_granted' ? 'لم يُسمح باستخدام Claude للترجمة. يمكنك فتح النص في ترجمة Google.' : 'تعذّرت الترجمة الآن. حاول مرة أخرى أو افتح ترجمة Google.';
-  }
+
+  // 3) ترجمة سريعة داخل التطبيق
+  setBadge('ترجمة سريعة · MyMemory');
+  try { out.textContent = await translateFree(text, from === 'ar' ? 'ar' : 'Autodetect', to); }
+  catch { out.textContent = 'تعذّرت الترجمة الآن. استخدم أحد الأزرار أدناه.'; setBadge(''); }
 }
 /** ترجمة مجانية عبر خدمة MyMemory، على دفعات لا تتجاوز 450 حرفًا. */
 async function translateFree(text, from, to) {
@@ -1906,6 +1988,7 @@ function renderSettings() {
         seg([['auto', 'تلقائي'], ['single', 'صفحة واحدة'], ['double', 'صفحتان']], st.pageMode, (k) => { st.pageMode = k; })),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'قلب الصفحة'), el('span', {}, 'الواقعي ينحني كالورق ويتبع إصبعك حين تسحب طرف الصفحة.')),
         seg([['curl', 'واقعي'], ['slide', 'انزلاق'], ['none', 'دون حركة']], st.turnAnim, (k) => { st.turnAnim = k; })),
+      translationSettings(),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'لغة الترجمة'), el('span', {}, 'يُترجم النص العربي إليها، ويُترجم غير العربي إلى العربية.')),
         seg([['en', 'الإنجليزية'], ['fr', 'الفرنسية'], ['es', 'الإسبانية'], ['tr', 'التركية']], st.translateTo, (k) => { st.translateTo = k; })),
       !window.claude ? null : el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'محرّك استخراج النص'), el('span', {}, 'المحلي يعمل دون إنترنت ولا يرسل الصفحة. Claude أدقّ مع الخطوط العربية الصعبة.')),
@@ -1920,8 +2003,28 @@ function renderSettings() {
   ));
   main.replaceChildren(view);
 }
+function translationSettings() {
+  const st = S.settings;
+  const key = el('input', { class: 'input', type: 'password', id: 'claudeKey', placeholder: 'sk-ant-…', value: st.claudeKey, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'مفتاح Claude API', style: 'max-width:280px;direction:ltr' });
+  const status = el('span', { class: 'muted', style: 'font-size:13px' }, st.claudeKey ? 'المفتاح محفوظ على هذا الجهاز فقط.' : 'بلا مفتاح: يُفتح Claude نفسه بالنص المحدد.');
+  const save = () => { st.claudeKey = key.value.trim(); saveSettings(); status.textContent = st.claudeKey ? 'حُفظ المفتاح على هذا الجهاز فقط.' : 'أُزيل المفتاح.'; };
+  key.addEventListener('change', save);
+  const test = el('button', { class: 'btn', onclick: async () => {
+    save(); if (!st.claudeKey) return;
+    status.textContent = 'جارٍ الاختبار…';
+    try { const r = await translateClaudeApi('sovereignty', 'ar', () => {}); status.textContent = `يعمل. مثال: sovereignty ← ${r.split('\n')[0].slice(0, 40)}`; }
+    catch (e) { status.textContent = `لم ينجح: ${e.reason || 'خطأ غير متوقع'}.`; }
+  } }, 'اختبار');
+  const seg = el('div', { class: 'seg' }, ...[['claude', 'فتح Claude'], ['deepl', 'فتح DeepL'], ['quick', 'ترجمة سريعة فقط']].map(([k, l]) =>
+    el('button', { 'aria-pressed': String((st.noKeyTranslator || 'claude') === k), onclick: () => { st.noKeyTranslator = k; saveSettings(); renderSettings(); } }, l)));
+  return el('div', { class: 'set-row' },
+    el('div', { class: 'l' }, el('b', {}, 'المترجم الافتراضي: المساعد الأكاديمي (Claude)'),
+      el('span', {}, 'يترجم بمصطلحات العلوم السياسية والعلاقات الدولية والدراسات الأمنية والقانون الدولي. مع مفتاح Claude API (من console.anthropic.com) تتم الترجمة داخل التطبيق مباشرة؛ وإن تعذّرت ينتقل إلى DeepL ثم إلى الترجمة السريعة.'),
+      el('div', { class: 'row', style: 'margin-top:10px' }, key, test), status,
+      el('div', { style: 'margin-top:10px;font-size:14px' }, 'حين لا يوجد مفتاح:'), seg));
+}
 async function exportBackup() {
-  const dump = { app: 'raff', version: 1, at: new Date().toISOString(), settings: S.settings, books: S.books, shelves: S.shelves, notes: S.notes, marks: S.marks, daily: Object.values(S.daily), ink: {}, ocr: {} };
+  const dump = { app: 'raff', version: 1, at: new Date().toISOString(), settings: { ...S.settings, claudeKey: '' }, books: S.books, shelves: S.shelves, notes: S.notes, marks: S.marks, daily: Object.values(S.daily), ink: {}, ocr: {} };
   for (const s of ['ink', 'ocr']) for (const k of await Store.keys(s)) dump[s][k] = await Store.get(s, k);
   const data = JSON.stringify(dump);
   const dl = await cap('downloads');

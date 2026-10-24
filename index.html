@@ -271,6 +271,13 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 .textLayer:empty { pointer-events: none; }
 .dr-inks { display: inline-flex; gap: 4px; }
 .dr-inks i { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,.15); }
+.tr-badge { font-size: 12px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 10px; margin-inline-start: auto; white-space: nowrap; }
+.tr-badge:empty { display: none; }
+.tr-note { font-size: 13px; color: var(--muted); background: var(--surface-2); border-radius: 10px; padding: 8px 10px; margin-top: 10px; line-height: 1.6; }
+.tr-actions { margin-top: 12px; gap: 8px; }
+.tr-actions .btn { min-height: 38px; padding: 6px 12px; font-size: 14px; }
+a.btn { text-decoration: none; color: var(--ink); }
+a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .leaf { position: absolute; top: 0; z-index: 6; pointer-events: none; transform-style: preserve-3d; }
 .leaf.mirror { transform: scaleX(-1); }
 .leaf .strip { position: absolute; top: 0; transform-style: preserve-3d; transform-origin: left center; will-change: transform; }
