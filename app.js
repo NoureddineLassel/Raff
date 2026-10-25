@@ -273,13 +273,170 @@ async function deleteBook(id) {
 }
 
 // ---------- Ink (Apple Pencil) ----------
+// ---------- Ink geometry: hold-to-snap shapes and handwriting refinement ----------
+// كل الحسابات بالبكسل الفعلي على الشاشة، ثم تُعاد إلى إحداثيات نسبية.
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const pathLen = (P) => { let L = 0; for (let i = 1; i < P.length; i++) L += dist(P[i - 1], P[i]); return L; };
+function resample(P, n) {
+  const L = pathLen(P), step = L / (n - 1), out = [P[0]]; let acc = 0;
+  for (let i = 1; i < P.length && out.length < n; i++) {
+    let a = P[i - 1]; const b = P[i]; let d = dist(a, b);
+    while (acc + d >= step && out.length < n) {
+      const t = (step - acc) / d, q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      out.push(q); a = q; d = dist(a, b); acc = 0;
+    }
+    acc += d;
+  }
+  while (out.length < n) out.push(P.at(-1));
+  return out;
+}
+function segDist(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+  const t = l2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0;
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+function rdp(P, eps) {
+  if (P.length < 3) return P.slice();
+  let idx = 0, md = 0;
+  for (let i = 1; i < P.length - 1; i++) { const d = segDist(P[i], P[0], P.at(-1)); if (d > md) { md = d; idx = i; } }
+  if (md <= eps) return [P[0], P.at(-1)];
+  return rdp(P.slice(0, idx + 1), eps).slice(0, -1).concat(rdp(P.slice(idx), eps));
+}
+const turnDeg = (a, b, c) => {
+  let d = Math.atan2(c[1] - b[1], c[0] - b[0]) - Math.atan2(b[1] - a[1], b[0] - a[0]);
+  while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+  return Math.abs(d * 180 / Math.PI);
+};
+/** يزيل الرؤوس التي لا تشكّل زاوية حقيقية في مضلّع مغلق. */
+function cleanCorners(V) {
+  let changed = true;
+  while (changed && V.length > 3) {
+    changed = false;
+    for (let i = 0; i < V.length; i++) {
+      const a = V[(i - 1 + V.length) % V.length], b = V[i], c = V[(i + 1) % V.length];
+      if (turnDeg(a, b, c) < 28 || dist(a, b) < 6) { V.splice(i, 1); changed = true; break; }
+    }
+  }
+  return V;
+}
+const polyErr = (R, V, closed) => {
+  const E = closed ? V.map((v, i) => [v, V[(i + 1) % V.length]]) : V.slice(1).map((v, i) => [V[i], v]);
+  return R.reduce((s, p) => s + Math.min(...E.map(([a, b]) => segDist(p, a, b))), 0) / R.length;
+};
+function snapAxis(a, b) { // يجعل الخط أفقيًا أو عموديًا إن كان قريبًا من ذلك
+  const ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI, m = ((ang % 90) + 90) % 90;
+  if (m < 5 || m > 85) return Math.abs(b[0] - a[0]) > Math.abs(b[1] - a[1]) ? [b[0], a[1]] : [a[0], b[1]];
+  return b;
+}
+/** يتعرّف على الشكل المرسوم: خط، دائرة، قطع ناقص، مثلث، مستطيل، مضلّع، أو خط منكسر. */
+function recognizeShape(P) {
+  const L = pathLen(P); if (L < 30) return null;
+  const R = resample(P, 72), a = R[0], z = R.at(-1), chord = dist(a, z);
+  if (chord / L > 0.93 && Math.max(...R.map((p) => segDist(p, a, z))) < Math.max(5, chord * 0.06))
+    return { kind: 'line', pts: [a, snapAxis(a, z)] };
+  const closed = chord < Math.max(18, L * 0.2);
+  if (closed) {
+    // القطع الناقص: محوره من التحليل إلى المكوّنات الرئيسية
+    const cx = R.reduce((s, p) => s + p[0], 0) / R.length, cy = R.reduce((s, p) => s + p[1], 0) / R.length;
+    let sxx = 0, syy = 0, sxy = 0; for (const [x, y] of R) { sxx += (x - cx) ** 2; syy += (y - cy) ** 2; sxy += (x - cx) * (y - cy); }
+    let th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    if (Math.abs(th) < 0.1 || Math.abs(Math.abs(th) - Math.PI / 2) < 0.1) th = Math.round(th / (Math.PI / 2)) * (Math.PI / 2);
+    const cos = Math.cos(th), sin = Math.sin(th), Q = R.map(([x, y]) => [(x - cx) * cos + (y - cy) * sin, -(x - cx) * sin + (y - cy) * cos]);
+    const minX = Math.min(...Q.map((q) => q[0])), maxX = Math.max(...Q.map((q) => q[0])), minY = Math.min(...Q.map((q) => q[1])), maxY = Math.max(...Q.map((q) => q[1]));
+    let ea = (maxX - minX) / 2, eb = (maxY - minY) / 2; const ox = (maxX + minX) / 2, oy = (maxY + minY) / 2;
+    const ellErr = Q.reduce((s, [x, y]) => s + Math.abs(Math.hypot((x - ox) / ea, (y - oy) / eb) - 1), 0) / Q.length;
+    const V = cleanCorners(rdp(R.concat([R[0]]), L * 0.035).slice(0, -1));
+    const pErr = V.length >= 3 ? polyErr(R, V, true) / L : 1;
+    const asPoly = V.length >= 3 && V.length <= 8 && (pErr < 0.006 || (pErr < 0.012 && ellErr > 0.06));
+    if (!asPoly && ellErr < 0.1) {
+      if (ea / eb > 0.86 && ea / eb < 1.16) ea = eb = (ea + eb) / 2;
+      const ccx = cx + ox * cos - oy * sin, ccy = cy + ox * sin + oy * cos, pts = [];
+      for (let i = 0; i <= 96; i++) { const t = (i / 96) * 2 * Math.PI, x = ea * Math.cos(t), y = eb * Math.sin(t); pts.push([ccx + x * cos - y * sin, ccy + x * sin + y * cos]); }
+      return { kind: ea === eb ? 'circle' : 'ellipse', pts };
+    }
+    if (V.length >= 3 && V.length <= 8 && pErr < 0.02) {
+      let W = V;
+      if (V.length === 4 && V.every((v, i) => Math.abs(180 - turnDeg(V[(i + 3) % 4], v, V[(i + 1) % 4]) - 90) < 15)) {
+        // مستطيل: محاذاة على أطول ضلع، وأفقي/عمودي إن كان قريبًا من ذلك
+        let best = 0; for (let i = 0; i < 4; i++) if (dist(V[i], V[(i + 1) % 4]) > dist(V[best], V[(best + 1) % 4])) best = i;
+        let ang = Math.atan2(V[(best + 1) % 4][1] - V[best][1], V[(best + 1) % 4][0] - V[best][0]);
+        const deg = ((ang * 180 / Math.PI) % 90 + 90) % 90; if (deg < 7 || deg > 83) ang = Math.round(ang / (Math.PI / 2)) * (Math.PI / 2);
+        const u = [Math.cos(ang), Math.sin(ang)], v = [-u[1], u[0]], pu = V.map((p) => p[0] * u[0] + p[1] * u[1]), pv = V.map((p) => p[0] * v[0] + p[1] * v[1]);
+        const [u0, u1, v0, v1] = [Math.min(...pu), Math.max(...pu), Math.min(...pv), Math.max(...pv)];
+        W = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(([s, t]) => [s * u[0] + t * v[0], s * u[1] + t * v[1]]);
+      }
+      return { kind: V.length === 3 ? 'triangle' : V.length === 4 ? 'rectangle' : 'polygon', pts: sharpPath(W.concat([W[0]])) };
+    }
+    return null;
+  }
+  const V = rdp(R, L * 0.04);
+  if (V.length >= 3 && V.length <= 5 && polyErr(R, V, false) / L < 0.008) {
+    const W = V.slice(); for (let i = 1; i < W.length; i++) W[i] = snapAxis(W[i - 1], W[i]);
+    return { kind: 'polyline', pts: sharpPath(W) };
+  }
+  return null;
+}
+/** نقاط إضافية قرب كل رأس حتى تبقى الزوايا حادة مع رسم المنحنيات الناعم. */
+function sharpPath(V) {
+  const out = [];
+  for (let i = 0; i < V.length - 1; i++) {
+    const a = V[i], b = V[i + 1], at = (t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    out.push(a, at(0.01), at(0.5), at(0.99));
+  }
+  out.push(V.at(-1));
+  return out;
+}
+/** تنعيم خفيف لرجفة اليد في الخط وضغطه، مع تثبيت طرفيه. */
+function smoothStroke(P, w, h) {
+  const px = P.map(([x, y, p]) => [x * w, y * h, p]).filter((q, i, A) => i === 0 || i === A.length - 1 || dist(q, A[i - 1]) > 0.6);
+  if (px.length < 5) return P;
+  const K = [1, 2, 3, 2, 1], out = px.map((q, i) => {
+    if (i === 0 || i === px.length - 1) return q;
+    let sx = 0, sy = 0, sp = 0, sw = 0;
+    for (let k = -2; k <= 2; k++) { const j = Math.max(0, Math.min(px.length - 1, i + k)), wt = K[k + 2]; sx += px[j][0] * wt; sy += px[j][1] * wt; sp += px[j][2] * wt; sw += wt; }
+    return [sx / sw, sy / sw, sp / sw];
+  });
+  return out.map(([x, y, p]) => [+(x / w).toFixed(4), +(y / h).toFixed(4), +p.toFixed(2)]);
+}
+/** تقويم سطر مكتوب: يُدار ليصير أفقيًا، وتُقرّب كلماته من خط واحد. */
+function straightenLine(strokes, w, h) {
+  const info = strokes.map((s) => {
+    const P = s.p.map(([x, y]) => [x * w, y * h]);
+    const xs = P.map((p) => p[0]), ys = P.map((p) => p[1]);
+    return { s, P, len: Math.max(pathLen(P), 1), cx: xs.reduce((a, b) => a + b, 0) / xs.length, cy: ys.reduce((a, b) => a + b, 0) / ys.length,
+      x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+  });
+  const gx0 = Math.min(...info.map((i) => i.x0)), gx1 = Math.max(...info.map((i) => i.x1));
+  const hts = info.map((i) => i.y1 - i.y0).sort((a, b) => a - b), mh = Math.max(hts[hts.length >> 1], 8);
+  if (info.length < 3 || gx1 - gx0 < Math.max(60, mh * 2.5)) return false;
+  let W = 0, mx = 0, my = 0; for (const i of info) { W += i.len; mx += i.cx * i.len; my += i.cy * i.len; } mx /= W; my /= W;
+  let num = 0, den = 0; for (const i of info) { num += i.len * (i.cx - mx) * (i.cy - my); den += i.len * (i.cx - mx) ** 2; }
+  const ang = den ? Math.atan(num / den) : 0, deg = Math.abs(ang * 180 / Math.PI);
+  if (deg > 20) return false;
+  const rot = deg >= 1.2 ? -ang : 0, cos = Math.cos(rot), sin = Math.sin(rot);
+  const R = (x, y) => [mx + (x - mx) * cos - (y - my) * sin, my + (x - mx) * sin + (y - my) * cos];
+  for (const i of info) { i.P = i.P.map(([x, y]) => R(x, y)); [i.cx, i.cy] = R(i.cx, i.cy); i.x0 = Math.min(...i.P.map((p) => p[0])); i.x1 = Math.max(...i.P.map((p) => p[0])); }
+  // الكلمات: مجموعات الخطوط المتداخلة أفقيًا (تشمل النقاط والحركات)
+  const order = info.slice().sort((a, b) => a.x0 - b.x0), words = [];
+  for (const i of order) { const wd = words.at(-1); if (wd && i.x0 <= wd.x1 + mh * 0.25) { wd.items.push(i); wd.x1 = Math.max(wd.x1, i.x1); } else words.push({ items: [i], x1: i.x1 }); }
+  let moved = rot !== 0;
+  for (const wd of words) {
+    const ww = wd.items.reduce((a, i) => a + i.len, 0), wy = wd.items.reduce((a, i) => a + i.cy * i.len, 0) / ww;
+    const dy = Math.max(-mh * 0.5, Math.min(mh * 0.5, (my - wy) * 0.7));
+    if (Math.abs(dy) > 0.5) { moved = true; for (const i of wd.items) i.P = i.P.map(([x, y]) => [x, y + dy]); }
+  }
+  if (!moved) return false;
+  for (const i of info) i.s.p = i.P.map(([x, y], k) => [+(x / w).toFixed(4), +(y / h).toFixed(4), i.s.p[k][2]]);
+  return true;
+}
+
 class Ink {
   constructor(host, { onCommit, onStart, blend } = {}) {
     this.host = host; host.classList.add('ink-layer');
     if (blend === false) host.style.mixBlendMode = 'normal';
     this.base = el('canvas'); this.live = el('canvas'); host.append(this.base, this.live);
     this.strokes = []; this.undoS = []; this.redoS = []; this.enabled = false; this.w = 0; this.h = 0; this.dpr = 1;
-    this.onCommit = onCommit; this.onStart = onStart;
+    this.onCommit = onCommit; this.onStart = onStart; this.recent = [];
     host.addEventListener('pointerdown', (e) => this.down(e));
     host.addEventListener('pointermove', (e) => this.move(e));
     host.addEventListener('pointerup', (e) => this.up(e));
@@ -287,7 +444,7 @@ class Ink {
     host.addEventListener('touchmove', (e) => { if (this.pid != null) e.preventDefault(); }, { passive: false });
   }
   setEnabled(b) { this.enabled = b; this.host.classList.toggle('active', b); }
-  load(strokes) { this.strokes = strokes || []; this.undoS = []; this.redoS = []; this.draw(); }
+  load(strokes) { this.strokes = strokes || []; this.undoS = []; this.redoS = []; this.recent = []; clearTimeout(this.lineT); this.draw(); }
   resize() {
     const r = this.host.getBoundingClientRect(); if (!r.width) return;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2); this.w = r.width; this.h = r.height;
@@ -308,26 +465,66 @@ class Ink {
     this.onStart && this.onStart(this);
     const p = S.settings.pen;
     if (p.tool === 'eraser') { this.erasing = []; this.eraseAt(this.pt(e)); return; }
+    clearTimeout(this.lineT);
     this.cur = { t: p.tool, c: p.color, w: p.width, p: [this.pt(e)] };
+    this.holdRef = this.cur.p[0]; this.armHold();
     this.drawLive();
   }
   move(e) {
     if (e.pointerId !== this.pid) return;
     e.preventDefault(); e.stopPropagation();
     const evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+    if (this.cur?.shape) { // بعد ضبط الخط يتبع طرفُه القلمَ حتى رفعه
+      if (this.cur.shape === 'line') { const q = this.pt(e), a = this.cur.p[0], b = snapAxis([a[0] * this.w, a[1] * this.h], [q[0] * this.w, q[1] * this.h]); this.cur.p[1] = [b[0] / this.w, b[1] / this.h, a[2]]; this.drawLive(); }
+      return;
+    }
     for (const ev of evs.length ? evs : [e]) { const q = this.pt(ev); if (this.erasing) this.eraseAt(q); else if (this.cur) this.cur.p.push(q); }
-    if (this.cur) this.drawLive();
+    if (this.cur) {
+      const q = this.cur.p.at(-1);
+      if (Math.hypot((q[0] - this.holdRef[0]) * this.w, (q[1] - this.holdRef[1]) * this.h) > 3) { this.holdRef = q; this.armHold(); }
+      this.drawLive();
+    }
+  }
+  /** الضغط المستمر دون حركة بعد رسم خط أو شكل يجعله مضبوطًا. */
+  armHold() { clearTimeout(this.holdT); if (S.settings.inkShapes !== false) this.holdT = setTimeout(() => this.snap(), 550); }
+  snap() {
+    const s = this.cur; if (!s || s.shape || s.t === 'eraser' || this.pid == null) return;
+    const shape = recognizeShape(s.p.map(([x, y]) => [x * this.w, y * this.h]));
+    if (!shape) return;
+    const ps = s.p.map((q) => q[2]).sort((a, b) => a - b), pr = ps[ps.length >> 1] || 0.5;
+    s.p = shape.pts.map(([x, y]) => [x / this.w, y / this.h, pr]); s.shape = shape.kind;
+    this.drawLive();
+    this.host.dispatchEvent(new CustomEvent('inkshape', { bubbles: true, detail: shape.kind }));
   }
   up(e) {
-    if (e.pointerId !== this.pid) return; this.pid = null;
+    if (e.pointerId !== this.pid) return; this.pid = null; clearTimeout(this.holdT);
     if (this.erasing) { if (this.erasing.length) { this.undoS.push({ type: 'erase', items: this.erasing }); this.redoS = []; this.commit(); } this.erasing = null; return; }
     if (!this.cur) return;
     const s = this.cur; this.cur = null;
+    const refine = S.settings.inkRefine !== false && !s.shape && s.t !== 'marker';
+    if (refine) s.p = smoothStroke(s.p, this.w, this.h);
     s.p = s.p.map(([x, y, p]) => [+x.toFixed(4), +y.toFixed(4), +p.toFixed(2)]);
     this.strokes.push(s); this.undoS.push({ type: 'add', stroke: s }); this.redoS = [];
     this.live.getContext('2d').clearRect(0, 0, this.live.width, this.live.height);
     this.stroke(this.base.getContext('2d'), s);
     this.commit();
+    if (refine) this.queueLine(s);
+  }
+  /** يجمع خطوط السطر الجاري، ويقوّمه بعد توقف قصير عن الكتابة أو عند الانتقال إلى سطر جديد. */
+  queueLine(s) {
+    const ys = s.p.map((q) => q[1] * this.h), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const g = this.recent.filter((k) => this.strokes.includes(k));
+    if (g.length) {
+      const gy = g.flatMap((k) => k.p.map((q) => q[1] * this.h)), gy0 = Math.min(...gy), gy1 = Math.max(...gy);
+      const lh = Math.max(gy1 - gy0, y1 - y0, 24); // النقاط الصغيرة لا تُحسب سطرًا جديدًا
+      if (Math.abs((y0 + y1) / 2 - (gy0 + gy1) / 2) > lh * 1.1) { this.recent = g; this.refineLine(); }
+    }
+    this.recent = this.recent.filter((k) => this.strokes.includes(k)).concat(s);
+    clearTimeout(this.lineT); this.lineT = setTimeout(() => this.refineLine(), 1100);
+  }
+  refineLine() {
+    const g = this.recent.filter((k) => this.strokes.includes(k)); this.recent = [];
+    if (g.length && straightenLine(g, this.w, this.h)) { this.draw(); this.commit(); }
   }
   eraseAt([x, y]) {
     let hit = false;
@@ -387,8 +584,53 @@ const PEN_WIDTHS = [2, 3.5, 7];
 const TOOL_NAMES = { pen: 'قلم حبر', pencil: 'قلم رصاص', marker: 'قلم تظليل', eraser: 'ممحاة' };
 function penBar(getInk, extra) {
   const bar = el('div', { class: 'pen-bar', role: 'toolbar', 'aria-label': 'أدوات القلم' });
+  let baseCss = '', swallowClick = false;
+  // الضغط المطوّل بالإصبع على الشريط يطويه في دائرة صغيرة يمكن سحبها؛ والنقر عليها يعيده
+  const collapse = (x, y) => {
+    S.settings.penMini = true;
+    if (x != null) S.settings.penMiniPos = { x: x / innerWidth, y: y / innerHeight };
+    saveSettings(); render();
+  };
+  const expand = () => { S.settings.penMini = false; saveSettings(); render(); };
+  bar.addEventListener('pointerdown', (e) => {
+    if (S.settings.penMini || e.pointerType === 'pen' || e.button > 0) return;
+    const x0 = e.clientX, y0 = e.clientY;
+    const t = setTimeout(() => { swallowClick = true; collapse(x0, y0); navigator.vibrate?.(10); }, 550);
+    const stop = () => { clearTimeout(t); removeEventListener('pointermove', mv); removeEventListener('pointerup', stop); removeEventListener('pointercancel', stop); };
+    const mv = (ev) => { if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) stop(); };
+    addEventListener('pointermove', mv); addEventListener('pointerup', stop); addEventListener('pointercancel', stop);
+  });
+  bar.addEventListener('click', (e) => { if (swallowClick) { swallowClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
+  bar.addEventListener('contextmenu', (e) => e.preventDefault());
+  const renderMini = () => {
+    const p = S.settings.pen, pos = S.settings.penMiniPos || { x: 0.5, y: 0.12 };
+    if (!bar.classList.contains('is-mini')) baseCss = bar.style.cssText;
+    bar.classList.add('is-mini');
+    const place = (x, y) => {
+      const r = 30, cx = Math.max(r + 6, Math.min(innerWidth - r - 6, x)), cy = Math.max(r + 6, Math.min(innerHeight - r - 6, y));
+      bar.style.cssText = `position:fixed;left:${cx - r}px;top:${cy - r}px;transform:none;margin:0;width:auto`;
+      return [cx, cy];
+    };
+    place(pos.x * innerWidth, pos.y * innerHeight);
+    const btn = el('button', { class: 'pen-mini', style: `--c:${p.tool === 'eraser' ? 'var(--muted)' : p.color}`, 'aria-label': `${TOOL_NAMES[p.tool]}: اضغط لإظهار أدوات القلم، أو اسحب لتحريكها` }, icon(p.tool));
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const x0 = e.clientX, y0 = e.clientY, r0 = bar.getBoundingClientRect(); let dragged = false;
+      try { btn.setPointerCapture(e.pointerId); } catch {}
+      const mv = (ev) => {
+        if (!dragged && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+        dragged = true; const [cx, cy] = place(r0.left + 30 + ev.clientX - x0, r0.top + 30 + ev.clientY - y0);
+        S.settings.penMiniPos = { x: cx / innerWidth, y: cy / innerHeight };
+      };
+      const up = () => { btn.removeEventListener('pointermove', mv); btn.removeEventListener('pointerup', up); btn.removeEventListener('pointercancel', up); if (dragged) saveSettings(); else expand(); };
+      btn.addEventListener('pointermove', mv); btn.addEventListener('pointerup', up); btn.addEventListener('pointercancel', up);
+    });
+    bar.replaceChildren(btn);
+  };
   const render = () => {
     const p = S.settings.pen;
+    if (S.settings.penMini) return renderMini();
+    if (bar.classList.contains('is-mini')) { bar.classList.remove('is-mini'); bar.style.cssText = baseCss; }
     bar.replaceChildren(
       ...Object.keys(TOOL_NAMES).map((t) => el('button', { class: 'icon-btn', title: TOOL_NAMES[t], 'aria-label': TOOL_NAMES[t], 'aria-pressed': String(p.tool === t), onclick: () => { p.tool = t; if (t === 'marker' && !['#F2C230', '#F07AA5'].includes(p.color)) p.color = '#F2C230'; saveSettings(); render(); } }, icon(t))),
       el('span', { class: 'sep' }),
@@ -400,6 +642,7 @@ function penBar(getInk, extra) {
       el('button', { class: 'icon-btn', title: 'إعادة', 'aria-label': 'إعادة', onclick: () => getInk()?.redo() }, icon('redo')),
       el('button', { class: 'icon-btn', title: 'مسح الصفحة', 'aria-label': 'مسح الصفحة', onclick: () => { getInk()?.clear(); toast('مُسحت الكتابة. اضغط «تراجع» لاستعادتها.'); } }, icon('clear')),
       el('button', { class: 'toggle-chip', 'aria-pressed': String(S.settings.penOnly), title: 'عند التفعيل لا يرسم إلا Apple Pencil، والإصبع يقلب الصفحات', onclick: () => { S.settings.penOnly = !S.settings.penOnly; saveSettings(); render(); } }, 'القلم فقط'),
+      el('button', { class: 'toggle-chip', 'aria-pressed': String(S.settings.inkRefine !== false), title: 'ينعّم الخط المكتوب بيدك ويقوّم السطر المائل بعد توقفك عن الكتابة', onclick: () => { S.settings.inkRefine = S.settings.inkRefine === false; saveSettings(); render(); } }, 'تحسين الخط'),
       ...(extra ? [extra] : []),
     );
   };
@@ -2251,6 +2494,10 @@ function renderSettings() {
         seg([['local', 'على الجهاز'], ['claude', 'Claude']], st.ocrEngine, (k) => { st.ocrEngine = k; })),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'الرسم بـ Apple Pencil فقط'), el('span', {}, 'يتجاهل لمس الإصبع وراحة اليد أثناء الكتابة، ويبقى الإصبع لتقليب الصفحات.')),
         seg([[true, 'مفعّل'], [false, 'الإصبع يرسم أيضًا']], st.penOnly, (k) => { st.penOnly = k; })),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'ضبط الأشكال تلقائيًا'), el('span', {}, 'ارسم خطًا أو دائرة أو مستطيلًا أو مثلثًا، ثم أبقِ القلم ثابتًا على الشاشة لحظة دون رفعه: يتحوّل إلى شكل مضبوط. الخط المضبوط يبقى طرفه تابعًا للقلم حتى ترفعه.')),
+        seg([[true, 'مفعّل'], [false, 'متوقف']], st.inkShapes !== false, (k) => { st.inkShapes = k; })),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'تحسين خط اليد'), el('span', {}, 'ينعّم رجفة اليد في الكتابة العربية واللاتينية، وبعد توقفك لحظة يقوّم السطر المائل ويقرّب كلماته من خط واحد.')),
+        seg([[true, 'مفعّل'], [false, 'متوقف']], st.inkRefine !== false, (k) => { st.inkRefine = k; })),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'حجم خط النص المستخرج'), el('span', { class: 'num' }, `${st.readSize} بكسل`)),
         el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => { setReadSize(-2); renderSettings(); } }, 'أصغر'), el('button', { class: 'btn', onclick: () => { setReadSize(2); renderSettings(); } }, 'أكبر'))),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'نسخة احتياطية'), el('span', {}, 'تصدير الملاحظات والتظليلات والكتابة بالقلم والإحصائيات في ملف واحد. ملفات PDF نفسها لا تُضمَّن.')),

@@ -421,6 +421,13 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
   max-width: calc(100% - 24px);
 }
 .pen-bar .sep { width: 1px; height: 28px; background: var(--line); margin-inline: 4px; }
+.pen-bar { -webkit-touch-callout: none; }
+.pen-bar.is-mini { padding: 0; border-radius: 50%; border: 0; background: none; box-shadow: none; z-index: 30; }
+.pen-mini { width: 60px; height: 60px; border-radius: 50%; display: grid; place-items: center; border: 0; padding: 0; touch-action: none; cursor: grab;
+  background: var(--surface); color: var(--ink); box-shadow: 0 0 0 4px var(--c), 0 6px 18px rgba(0,0,0,.28); animation: miniIn .18s ease-out; }
+.pen-mini .icon { width: 26px; height: 26px; }
+@keyframes miniIn { from { transform: scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pen-mini { animation: none; } }
 .swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--line); padding: 0; }
 .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--accent); }
 .width-dot { width: 36px; height: 36px; border-radius: 10px; border: 0; background: none; display: grid; place-items: center; }
