@@ -426,6 +426,13 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 .pen-mini { width: 60px; height: 60px; border-radius: 50%; display: grid; place-items: center; border: 0; padding: 0; touch-action: none; cursor: grab;
   background: var(--surface); color: var(--ink); box-shadow: 0 0 0 4px var(--c), 0 6px 18px rgba(0,0,0,.28); animation: miniIn .18s ease-out; }
 .pen-mini .icon { width: 26px; height: 26px; }
+.pen-mini[aria-expanded="true"] { box-shadow: 0 0 0 4px var(--c), 0 0 0 7px var(--accent-soft), 0 6px 18px rgba(0,0,0,.28); }
+.pen-quick { position: absolute; display: grid; gap: 6px; padding: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 18px;
+  box-shadow: var(--shadow), 0 10px 30px -10px rgba(0,0,0,.35); width: max-content; animation: miniIn .15s ease-out; }
+.pq-row { display: flex; align-items: center; gap: 6px; justify-content: center; }
+.pen-quick .icon-btn { width: 44px; height: 44px; }
+.pen-quick .swatch { width: 32px; height: 32px; }
+@media (prefers-reduced-motion: reduce) { .pen-quick { animation: none; } }
 @keyframes miniIn { from { transform: scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .pen-mini { animation: none; } }
 .swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--line); padding: 0; }

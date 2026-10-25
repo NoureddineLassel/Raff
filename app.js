@@ -584,19 +584,29 @@ const PEN_WIDTHS = [2, 3.5, 7];
 const TOOL_NAMES = { pen: 'قلم حبر', pencil: 'قلم رصاص', marker: 'قلم تظليل', eraser: 'ممحاة' };
 function penBar(getInk, extra) {
   const bar = el('div', { class: 'pen-bar', role: 'toolbar', 'aria-label': 'أدوات القلم' });
-  let baseCss = '', swallowClick = false;
-  // الضغط المطوّل بالإصبع على الشريط يطويه في دائرة صغيرة يمكن سحبها؛ والنقر عليها يعيده
+  let baseCss = '', swallowClick = false, quickOpen = false, lastTap = 0;
+  // الضغط المطوّل بالإصبع على الشريط يطويه في دائرة صغيرة يمكن سحبها.
+  // نقرة على الدائرة تفتح لوحة سريعة للأدوات والألوان والسماكة، والنقر المزدوج يعيد الشريط كاملًا.
+  const p0 = () => S.settings.pen;
+  const setTool = (t) => { const p = p0(); p.tool = t; if (t === 'marker' && !['#F2C230', '#F07AA5'].includes(p.color)) p.color = '#F2C230'; saveSettings(); render(); };
+  const setColor = (c) => { const p = p0(); p.color = c; if (p.tool === 'eraser') p.tool = 'pen'; saveSettings(); render(); };
+  const setWidth = (w) => { p0().width = w; saveSettings(); render(); };
+  const onOutside = (e) => {
+    if (!bar.isConnected) return document.removeEventListener('pointerdown', onOutside, true);
+    if (quickOpen && !bar.contains(e.target)) { quickOpen = false; render(); }
+  };
+  document.addEventListener('pointerdown', onOutside, true);
   const collapse = (x, y) => {
     S.settings.penMini = true;
     if (x != null) S.settings.penMiniPos = { x: x / innerWidth, y: y / innerHeight };
     saveSettings(); render();
   };
-  const expand = () => { S.settings.penMini = false; saveSettings(); render(); };
+  const expand = () => { S.settings.penMini = false; quickOpen = false; saveSettings(); render(); };
   bar.addEventListener('pointerdown', (e) => {
     if (S.settings.penMini || e.pointerType === 'pen' || e.button > 0) return;
     const x0 = e.clientX, y0 = e.clientY;
     const t = setTimeout(() => { swallowClick = true; collapse(x0, y0); navigator.vibrate?.(10); }, 550);
-    const stop = () => { clearTimeout(t); removeEventListener('pointermove', mv); removeEventListener('pointerup', stop); removeEventListener('pointercancel', stop); };
+    const stop = () => { clearTimeout(t); if (swallowClick) setTimeout(() => { swallowClick = false; }, 0); removeEventListener('pointermove', mv); removeEventListener('pointerup', stop); removeEventListener('pointercancel', stop); };
     const mv = (ev) => { if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) stop(); };
     addEventListener('pointermove', mv); addEventListener('pointerup', stop); addEventListener('pointercancel', stop);
   });
@@ -611,32 +621,55 @@ function penBar(getInk, extra) {
       bar.style.cssText = `position:fixed;left:${cx - r}px;top:${cy - r}px;transform:none;margin:0;width:auto`;
       return [cx, cy];
     };
-    place(pos.x * innerWidth, pos.y * innerHeight);
-    const btn = el('button', { class: 'pen-mini', style: `--c:${p.tool === 'eraser' ? 'var(--muted)' : p.color}`, 'aria-label': `${TOOL_NAMES[p.tool]}: اضغط لإظهار أدوات القلم، أو اسحب لتحريكها` }, icon(p.tool));
+    const [pcx, pcy] = place(pos.x * innerWidth, pos.y * innerHeight);
+    const btn = el('button', { class: 'pen-mini', 'aria-expanded': String(quickOpen), style: `--c:${p.tool === 'eraser' ? 'var(--muted)' : p.color}`, 'aria-label': `${TOOL_NAMES[p.tool]}: انقر لاختيار الأداة واللون، وانقر مرتين لإظهار الشريط كاملًا، أو اسحب لتحريكها` }, icon(p.tool));
     btn.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
       const x0 = e.clientX, y0 = e.clientY, r0 = bar.getBoundingClientRect(); let dragged = false;
       try { btn.setPointerCapture(e.pointerId); } catch {}
       const mv = (ev) => {
         if (!dragged && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+        if (!dragged && quickOpen) { quickOpen = false; bar.querySelector('.pen-quick')?.remove(); }
         dragged = true; const [cx, cy] = place(r0.left + 30 + ev.clientX - x0, r0.top + 30 + ev.clientY - y0);
         S.settings.penMiniPos = { x: cx / innerWidth, y: cy / innerHeight };
       };
-      const up = () => { btn.removeEventListener('pointermove', mv); btn.removeEventListener('pointerup', up); btn.removeEventListener('pointercancel', up); if (dragged) saveSettings(); else expand(); };
+      const up = () => {
+        btn.removeEventListener('pointermove', mv); btn.removeEventListener('pointerup', up); btn.removeEventListener('pointercancel', up);
+        if (dragged) { saveSettings(); lastTap = 0; return; }
+        const now = Date.now();
+        if (now - lastTap < 350) { lastTap = 0; expand(); return; }
+        lastTap = now; quickOpen = !quickOpen; render();
+      };
       btn.addEventListener('pointermove', mv); btn.addEventListener('pointerup', up); btn.addEventListener('pointercancel', up);
     });
     bar.replaceChildren(btn);
+    if (!quickOpen) return;
+    // اللوحة السريعة: تُفتح في الجهة التي فيها متسع بجانب الدائرة
+    const quick = el('div', { class: 'pen-quick', role: 'group', 'aria-label': 'اختيار سريع للأداة واللون' },
+      el('div', { class: 'pq-row' }, ...Object.keys(TOOL_NAMES).map((t) => el('button', { class: 'icon-btn', title: TOOL_NAMES[t], 'aria-label': TOOL_NAMES[t], 'aria-pressed': String(p.tool === t), onclick: () => setTool(t) }, icon(t)))),
+      el('div', { class: 'pq-row' }, ...PEN_COLORS.map((c) => el('button', { class: 'swatch', style: `background:${c}`, 'aria-label': 'لون', 'aria-pressed': String(p.color === c && p.tool !== 'eraser'), onclick: () => setColor(c) }))),
+      el('div', { class: 'pq-row' },
+        ...PEN_WIDTHS.map((w) => el('button', { class: 'width-dot', 'aria-label': 'السماكة', 'aria-pressed': String(p.width === w), onclick: () => setWidth(w) }, el('i', { style: `width:${w * 2 + 2}px;height:${w * 2 + 2}px` }))),
+        el('span', { class: 'sep' }),
+        el('button', { class: 'icon-btn', title: 'تراجع', 'aria-label': 'تراجع', onclick: () => getInk()?.undo() }, icon('undo')),
+        el('button', { class: 'icon-btn', title: 'إعادة', 'aria-label': 'إعادة', onclick: () => getInk()?.redo() }, icon('redo'))));
+    bar.append(quick);
+    const qw = quick.offsetWidth, qh = quick.offsetHeight, gap = 12;
+    const right = pcx + 30 + gap + qw <= innerWidth - 6 || pcx < innerWidth / 2;
+    const left = right ? 60 + gap : -(qw + gap);
+    const top = Math.max(6, Math.min(innerHeight - qh - 6, pcy - qh / 2)) - (pcy - 30);
+    quick.style.cssText = `left:${left}px;top:${top}px`;
   };
   const render = () => {
     const p = S.settings.pen;
     if (S.settings.penMini) return renderMini();
     if (bar.classList.contains('is-mini')) { bar.classList.remove('is-mini'); bar.style.cssText = baseCss; }
     bar.replaceChildren(
-      ...Object.keys(TOOL_NAMES).map((t) => el('button', { class: 'icon-btn', title: TOOL_NAMES[t], 'aria-label': TOOL_NAMES[t], 'aria-pressed': String(p.tool === t), onclick: () => { p.tool = t; if (t === 'marker' && !['#F2C230', '#F07AA5'].includes(p.color)) p.color = '#F2C230'; saveSettings(); render(); } }, icon(t))),
+      ...Object.keys(TOOL_NAMES).map((t) => el('button', { class: 'icon-btn', title: TOOL_NAMES[t], 'aria-label': TOOL_NAMES[t], 'aria-pressed': String(p.tool === t), onclick: () => setTool(t) }, icon(t))),
       el('span', { class: 'sep' }),
-      ...PEN_COLORS.map((c) => el('button', { class: 'swatch', style: `background:${c}`, 'aria-label': 'لون', 'aria-pressed': String(p.color === c), onclick: () => { p.color = c; if (p.tool === 'eraser') p.tool = 'pen'; saveSettings(); render(); } })),
+      ...PEN_COLORS.map((c) => el('button', { class: 'swatch', style: `background:${c}`, 'aria-label': 'لون', 'aria-pressed': String(p.color === c), onclick: () => setColor(c) })),
       el('span', { class: 'sep' }),
-      ...PEN_WIDTHS.map((w) => el('button', { class: 'width-dot', 'aria-label': 'السماكة', 'aria-pressed': String(p.width === w), onclick: () => { p.width = w; saveSettings(); render(); } }, el('i', { style: `width:${w * 2 + 2}px;height:${w * 2 + 2}px` }))),
+      ...PEN_WIDTHS.map((w) => el('button', { class: 'width-dot', 'aria-label': 'السماكة', 'aria-pressed': String(p.width === w), onclick: () => setWidth(w) }, el('i', { style: `width:${w * 2 + 2}px;height:${w * 2 + 2}px` }))),
       el('span', { class: 'sep' }),
       el('button', { class: 'icon-btn', title: 'تراجع', 'aria-label': 'تراجع', onclick: () => getInk()?.undo() }, icon('undo')),
       el('button', { class: 'icon-btn', title: 'إعادة', 'aria-label': 'إعادة', onclick: () => getInk()?.redo() }, icon('redo')),
