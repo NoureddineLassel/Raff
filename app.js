@@ -63,11 +63,12 @@ function saveLater(key, fn, ms = 500) {
 }
 /** ينفّذ كل الحفظ المؤجَّل فورًا (عند إخفاء التطبيق أو إغلاقه). */
 function flushLater() { const jobs = [...later.values()]; later.clear(); jobs.forEach((j) => { clearTimeout(j.t); j.fn(); }); }
-function toast(msg) {
+function toast(msg, action) {
   document.querySelectorAll('.toast').forEach((t) => t.remove());
-  const t = el('div', { class: 'toast', role: 'status' }, msg);
+  const t = el('div', { class: 'toast', role: 'status' }, msg,
+    action ? el('button', { class: 'toast-act', onclick: () => { t.remove(); action.fn(); } }, action.label) : null);
   document.body.append(t);
-  setTimeout(() => t.remove(), 2600);
+  setTimeout(() => t.remove(), action ? 7000 : 2600);
 }
 const isArabic = (s) => (s.match(/[؀-ۿ]/g) || []).length > s.replace(/\s/g, '').length * 0.3;
 
@@ -631,7 +632,7 @@ window.addEventListener('drop', (e) => { e.preventDefault(); importFiles([...(e.
 // ---------- Reader ----------
 // الكتاب يُعرض صفحة واحدة أو صفحتين متقابلتين. في الكتاب العربي الصفحة الفردية يمينًا والزوجية يسارًا،
 // وتقليب الصفحة التالية يرفع الصفحة اليسرى ويقلبها نحو اليمين حول كعب الكتاب.
-const R = { book: null, pdf: null, page: 1, mode: 'single', slots: [], activeInk: null, size: null, panel: false, pen: false, thumbs: false, drawer: false, ocrBusy: false, turning: false, filt: { type: 'all', colors: new Set() }, inkIndex: new Map() };
+const R = { book: null, pdf: null, page: 1, mode: 'single', slots: [], activeInk: null, size: null, panel: false, pen: false, thumbs: false, drawer: false, ocrBusy: false, turning: false, filt: { type: 'all', colors: new Set() }, inkIndex: new Map(), picking: null };
 const readerEl = $('#reader');
 const pageKey = (n = R.page) => `${R.book.id}:${n}`;
 const dprCap = () => Math.min(window.devicePixelRatio || 1, 2);
@@ -1352,7 +1353,7 @@ function colorCat(hex) {
 }
 const itemColors = (it) => (it.g ? [it.g.color] : it.type === 'ink' ? it.colors : ['red']);
 function setDrawer(on) {
-  R.drawer = on;
+  R.drawer = on; R.picking = null;
   R.els.drawerBtn.setAttribute('aria-pressed', String(on));
   R.els.drawer.hidden = !on;
   if (on) renderDrawer();
@@ -1387,10 +1388,96 @@ function renderDrawer() {
     R.filt.colors.size || R.filt.type !== 'all' ? el('button', { class: 'btn ghost', style: 'min-height:32px;padding:2px 10px;font-size:13px', onclick: () => { R.filt = { type: 'all', colors: new Set() }; renderDrawer(); } }, 'إلغاء التصفية') : null);
   const ul = el('div', { class: 'dr-list' });
   if (!list.length) ul.append(el('p', { class: 'muted', style: 'padding:16px;line-height:1.8' }, all.length ? 'لا عناصر تطابق هذه التصفية.' : 'لا شيء هنا بعد. ضع علامة على صفحة، أو ظلّل نصًا، أو اكتب بالقلم، وسيظهر هنا.'));
+  const picking = R.picking;
+  if (picking) for (const k of [...picking]) if (!list.some((it) => itemKey(it) === k)) picking.delete(k);
   for (const it of list) ul.append(drawerItem(it, spread.includes(it.page)));
+  const pickBtn = list.length || picking ? el('button', { class: 'btn ghost dr-pick', 'aria-pressed': String(!!picking), onclick: () => { R.picking = picking ? null : new Set(); renderDrawer(); } }, picking ? 'تم' : 'تحديد') : null;
   E.drawer.replaceChildren(
-    el('div', { class: 'dr-head' }, el('h2', {}, 'علامات وملاحظات الكتاب'), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => setDrawer(false) }, icon('close'))),
-    chips, dots, ul);
+    el('div', { class: 'dr-head' }, el('h2', {}, 'علامات وملاحظات الكتاب'), pickBtn, el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => setDrawer(false) }, icon('close'))),
+    chips, dots, ul, drawerActions(list));
+}
+// ---------- Deleting from the drawer ----------
+// يُحذف عنصر واحد، أو المحدد، أو كل ما تعرضه التصفية الحالية (بالنوع و/أو اللون)، مع إمكانية التراجع.
+const itemKey = (it) => `${it.type}:${it.page}:${it.g?.group || ''}`;
+const notesOnly = () => R.filt.type === 'note'; // في تصفية «الملاحظات» يُمحى نص الملاحظة ويبقى التظليل
+function filterLabel(n) {
+  const cs = [...R.filt.colors].map((c) => COLOR_NAMES[c]).join(' و');
+  const t = DRAWER_TYPES.find(([k]) => k === R.filt.type)[1];
+  if (R.filt.type === 'all' && !cs) return `حذف الكل (${fmt(n)})`;
+  return `حذف ${R.filt.type === 'all' ? 'كل ما' : t}${cs ? ` بلون ${cs}` : ''} (${fmt(n)})`;
+}
+function drawerActions(list) {
+  const picking = R.picking;
+  if (!list.length) return el('div', { class: 'dr-actions', hidden: true });
+  const targets = picking ? list.filter((it) => picking.has(itemKey(it))) : list;
+  let armed = false, timer = 0;
+  const label = picking ? `حذف المحدد (${fmt(targets.length)})` : filterLabel(targets.length);
+  const del = el('button', { class: 'btn danger dr-delall', disabled: !targets.length, onclick: () => {
+    if (!armed) {
+      armed = true; del.textContent = `اضغط مجددًا لتأكيد حذف ${fmt(targets.length)}`; del.classList.add('armed');
+      timer = setTimeout(() => { armed = false; del.textContent = label; del.classList.remove('armed'); }, 3500);
+      return;
+    }
+    clearTimeout(timer); R.picking = null; deleteItems(targets);
+  } }, icon('trash'), label);
+  return el('div', { class: 'dr-actions' },
+    picking ? el('button', { class: 'btn ghost', onclick: () => {
+      if (targets.length === list.length) picking.clear(); else list.forEach((it) => picking.add(itemKey(it)));
+      renderDrawer();
+    } }, targets.length === list.length ? 'إلغاء تحديد الكل' : 'تحديد الكل') : null,
+    del);
+}
+async function inkStrokes(page) {
+  const slot = R.slots.find((s) => s.page === page);
+  return slot ? slot.ink.strokes.slice() : ((await Store.get('ink', pageKey(page))) || []);
+}
+function setInkStrokes(page, strokes) {
+  const k = pageKey(page);
+  if (strokes.length) R.inkIndex.set(page, inkInfo(strokes)); else R.inkIndex.delete(page);
+  saveLater('ink:' + k, () => Store.put('ink', k, strokes.slice()), 0);
+  const slot = R.slots.find((s) => s.page === page);
+  if (slot) slot.ink.load(strokes.slice());
+}
+async function deleteItems(items) {
+  const b = R.book, onlyNotes = notesOnly(), colors = new Set(R.filt.colors);
+  const undo = { bookmarks: b.bookmarks.slice(), marks: [], notes: [], ink: new Map() };
+  const groups = new Set(items.filter((it) => it.g).map((it) => it.g.group));
+  const pages = new Set(items.filter((it) => it.type === 'bookmark').map((it) => it.page));
+  let n = 0;
+  if (pages.size) { b.bookmarks = b.bookmarks.filter((p) => !pages.has(p)); saveBook(b); n += pages.size; }
+  if (groups.size) {
+    const hit = S.marks.filter((m) => groups.has(m.group));
+    if (onlyNotes) {
+      for (const m of hit) { undo.notes.push([m, m.note]); m.note = ''; Store.put('marks', m.id, m); }
+    } else {
+      undo.marks = hit;
+      S.marks = S.marks.filter((m) => !groups.has(m.group));
+      hit.forEach((m) => Store.del('marks', m.id));
+    }
+    hit.forEach((m) => refreshPara(m.page, m.para));
+    n += groups.size;
+  }
+  for (const it of items.filter((x) => x.type === 'ink')) {
+    const prev = await inkStrokes(it.page);
+    undo.ink.set(it.page, prev);
+    // مع تصفية اللون تُحذف خطوط ذلك اللون وحدها، وتبقى بقية الكتابة على الصفحة
+    setInkStrokes(it.page, colors.size ? prev.filter((k) => k.t === 'eraser' || !colors.has(colorCat(k.c))) : []);
+    n++;
+  }
+  afterDelete();
+  toast(`حُذف ${n === 1 ? 'عنصر واحد' : n === 2 ? 'عنصران' : `${fmt(n)} عناصر`}.`, { label: 'تراجع', fn: () => {
+    b.bookmarks = undo.bookmarks; saveBook(b);
+    for (const m of undo.marks) { S.marks.push(m); Store.put('marks', m.id, m); refreshPara(m.page, m.para); }
+    for (const [m, note] of undo.notes) { m.note = note; Store.put('marks', m.id, m); refreshPara(m.page, m.para); }
+    for (const [p, strokes] of undo.ink) setInkStrokes(p, strokes);
+    afterDelete();
+  } });
+}
+function afterDelete() {
+  refreshPageMarks(); updateChrome();
+  if (R.thumbs) buildThumbs();
+  if (R.drawer) renderDrawer();
+  changed('marks'); changed('ink');
 }
 function drawerItem(it, current) {
   const meta = (t) => el('small', { class: 'dr-meta' }, `الصفحة ${it.page} · ${t}`);
@@ -1409,11 +1496,16 @@ function drawerItem(it, current) {
       g.note ? el('span', { class: 'dr-note' }, '✎ ' + g.note) : null,
       meta(`${it.type === 'underline' ? 'تسطير' : 'تظليل'} ${COLOR_NAMES[g.color] || ''}${g.rects ? ' · على الصفحة' : ''}`));
   }
+  const picking = R.picking, key = itemKey(it);
   const row = el('div', { class: 'dr-item', 'data-type': it.type, 'data-color': it.g?.color || '', 'data-place': it.g?.rects ? 'page' : '', 'aria-current': String(current) },
-    el('button', { class: 'dr-open', onclick: () => jumpTo(it) }, thumb, body));
-  if (it.type === 'bookmark') row.append(el('button', { class: 'icon-btn dr-del', 'aria-label': 'إزالة العلامة', title: 'إزالة العلامة', onclick: () => {
-    R.book.bookmarks = R.book.bookmarks.filter((n) => n !== it.page); saveBook(R.book); updateChrome(); renderDrawer();
-  } }, icon('close')));
+    picking ? el('span', { class: 'dr-check', 'aria-hidden': 'true' }) : null,
+    el('button', { class: 'dr-open', 'aria-pressed': picking ? String(picking.has(key)) : null,
+      onclick: () => { if (!picking) return jumpTo(it); picking.has(key) ? picking.delete(key) : picking.add(key); renderDrawer(); } }, thumb, body));
+  if (picking) row.classList.toggle('picked', picking.has(key));
+  else {
+    const what = notesOnly() ? 'حذف الملاحظة' : it.type === 'bookmark' ? 'إزالة العلامة' : it.type === 'ink' ? (R.filt.colors.size ? 'حذف خطوط هذا اللون' : 'حذف كتابة القلم') : 'حذف التظليل';
+    row.append(el('button', { class: 'icon-btn dr-del', 'aria-label': what, title: what, onclick: () => deleteItems([it]) }, icon('trash')));
+  }
   if (thumb) thumbURL(it.page, it.type === 'ink').then((u) => { thumb.src = u; }).catch(() => {});
   return row;
 }
@@ -1822,9 +1914,9 @@ function onMarkTap(e) {
 const LANGS = { en: 'الإنجليزية', fr: 'الفرنسية', es: 'الإسبانية', tr: 'التركية', ar: 'العربية' };
 const LANG_EN = { en: 'English', fr: 'French', es: 'Spanish', tr: 'Turkish', ar: 'Arabic' };
 // ---------- Translation chain ----------
-// 1) المساعد الأكاديمي عبر Claude: داخل التطبيق بمفتاح API، أو بفتح Claude نفسه إن لم يوجد مفتاح.
-// 2) DeepL: يُفتح تطبيقه أو موقعه بالنص جاهزًا (خدمته لا تقبل الاتصال المباشر من تطبيقات الويب).
-// 3) غيرهما: ترجمة سريعة داخل التطبيق (MyMemory)، ثم ترجمة Google.
+// كل الترجمة تجري داخل نافذة مصغّرة في التطبيق، ولا يُفتح المتصفح إلا بزر صريح.
+// 1) المساعد الأكاديمي عبر Claude بمفتاح API (يُضاف من النافذة نفسها مرة واحدة).
+// 2) بلا مفتاح أو عند التعذّر: ترجمة Google داخل النافذة، ثم MyMemory.
 const ACADEMIC_SYSTEM = `You are a senior academic translator specialising in political science, international relations, security and strategic studies, international law, diplomacy and foreign policy.
 Translate the user's text into the requested target language with the precision expected in peer-reviewed scholarship:
 - Use the established terminology of the field as it appears in reputable academic literature in the target language (for Arabic, the terms used in Arab universities and journals), not literal word-for-word renderings.
@@ -1873,26 +1965,27 @@ async function translatePop(text, rect) {
   const from = isArabic(text) ? 'ar' : 'en';
   const online = navigator.onLine !== false;
   const hasKey = !!S.settings.claudeKey;
-  // بلا مفتاح: يُفتح المترجم الافتراضي الآن، ما دامت هذه نقرة المستخدم نفسها
-  const noKey = S.settings.noKeyTranslator || 'claude';
-  if (!hasKey && !window.claude && online) {
-    if (noKey === 'claude') window.open(claudeAppUrl(text, to), '_blank', 'noopener');
-    else if (noKey === 'deepl') window.open(deeplUrl(text, from, to), '_blank', 'noopener');
-  }
   const ctrl = new AbortController();
   const badge = el('span', { class: 'tr-badge' }, '');
   const out = el('div', { class: 'out', dir: to === 'ar' ? 'rtl' : 'ltr', lang: to }, 'جارٍ الترجمة…');
   const note = el('div', { class: 'tr-note', hidden: true });
-  const link = (href, label, primary) => el('a', { class: 'btn' + (primary ? '' : ' ghost'), href, target: '_blank', rel: 'noopener' }, label);
+  const link = (href, label) => el('a', { class: 'tr-ext', href, target: '_blank', rel: 'noopener' }, label);
+  // تفعيل المساعد الأكاديمي من النافذة نفسها: يُلصق المفتاح مرة واحدة ثم تُعاد الترجمة في مكانها
+  const keyIn = el('input', { class: 'input', type: 'password', placeholder: 'sk-ant-…', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'مفتاح Claude API', style: 'direction:ltr' });
+  const activate = el('div', { class: 'tr-activate', hidden: true },
+    el('div', {}, 'لتظهر هنا ترجمة المساعد الأكاديمي المتخصصة، الصق مفتاح Claude API مرة واحدة (من console.anthropic.com). يُحفظ على هذا الجهاز فقط.'),
+    el('div', { class: 'row' }, keyIn, el('button', { class: 'btn primary', onclick: () => {
+      const v = keyIn.value.trim(); if (!v) return keyIn.focus();
+      S.settings.claudeKey = v; saveSettings(); ctrl.abort(); hideSelBar(); translatePop(text, rect);
+    } }, 'تفعيل')));
   const p = el('div', { class: 'pop', role: 'dialog', 'aria-label': 'الترجمة' },
     el('h3', {}, el('span', {}, `الترجمة إلى ${LANGS[to]}`), badge,
       el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => { ctrl.abort(); hideSelBar(); } }, icon('close'))),
-    el('div', { class: 'src', lang: from }, text), out, note,
+    el('div', { class: 'src', lang: from }, text), out, note, activate,
     el('div', { class: 'row tr-actions' },
       el('button', { class: 'btn', onclick: async () => { try { await navigator.clipboard.writeText(out.textContent); toast('نُسخت الترجمة.'); } catch { toast('تعذّر النسخ.'); } } }, icon('copy'), 'نسخ'),
-      link(claudeAppUrl(text, to), 'المساعد الأكاديمي في Claude', !hasKey),
-      link(deeplUrl(text, from, to), 'DeepL'),
-      link(googleUrl(text, to), 'Google')));
+      el('span', { class: 'tr-ext-l' }, 'فتح خارج التطبيق:'),
+      link(claudeAppUrl(text, to), 'Claude'), link(deeplUrl(text, from, to), 'DeepL'), link(googleUrl(text, to), 'Google')));
   place(p, rect); pop = p;
   const setBadge = (t) => { badge.textContent = t; };
   const fallbackNote = (t) => { note.hidden = false; note.textContent = t; };
@@ -1900,6 +1993,7 @@ async function translatePop(text, rect) {
 
   // 1) Claude داخل التطبيق: عبر حساب Claude حين يُفتح التطبيق داخله، أو بمفتاح API
   const sample = await cap('sample');
+  if (!sample && !hasKey) activate.hidden = false;
   if (sample || hasKey) {
     setBadge('المساعد الأكاديمي · Claude');
     try {
@@ -1916,19 +2010,27 @@ async function translatePop(text, rect) {
     } catch (e) {
       if (ctrl.signal.aborted || pop !== p) return;
       console.warn('claude translation failed', e);
-      fallbackNote(`تعذّرت الترجمة عبر Claude (${e.reason || 'خطأ غير متوقع'}). هذه ترجمة بديلة، ويمكنك المتابعة في DeepL.`);
-      p.querySelector('.tr-actions a[href*="deepl"]').classList.remove('ghost');
+      fallbackNote(`تعذّرت الترجمة عبر Claude (${e.reason || 'خطأ غير متوقع'}). هذه ترجمة بديلة.`);
+      if (e.reason === 'مفتاح Claude غير صالح') activate.hidden = false;
     }
-  } else if (noKey === 'claude') {
-    fallbackNote('فُتح المساعد الأكاديمي في Claude بالنص المحدد. هذه ترجمة سريعة للاطلاع إلى أن تعود.');
-  } else if (noKey === 'deepl') {
-    fallbackNote('فُتح DeepL بالنص المحدد. هذه ترجمة سريعة للاطلاع إلى أن تعود.');
   }
 
-  // 3) ترجمة سريعة داخل التطبيق
+  // 2) ترجمة سريعة داخل النافذة: Google ثم MyMemory
+  setBadge('ترجمة سريعة · Google');
+  try { out.textContent = await translateGoogle(text, to); return; }
+  catch (e) { if (ctrl.signal.aborted || pop !== p) return; console.warn('google translation failed', e); }
   setBadge('ترجمة سريعة · MyMemory');
   try { out.textContent = await translateFree(text, from === 'ar' ? 'ar' : 'Autodetect', to); }
-  catch { out.textContent = 'تعذّرت الترجمة الآن. استخدم أحد الأزرار أدناه.'; setBadge(''); }
+  catch { out.textContent = 'تعذّرت الترجمة الآن. حاول مجددًا بعد قليل.'; setBadge(''); }
+}
+/** ترجمة Google السريعة، تُعرض داخل النافذة دون فتح المتصفح. */
+async function translateGoogle(text, to) {
+  const res = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${to}&dt=t&q=${encodeURIComponent(text.slice(0, 4500))}`);
+  if (!res.ok) throw new Error('google ' + res.status);
+  const j = await res.json();
+  const t = (j?.[0] || []).map((x) => x?.[0] || '').join('').trim();
+  if (!t) throw new Error('google empty');
+  return t;
 }
 /** ترجمة مجانية عبر خدمة MyMemory، على دفعات لا تتجاوز 450 حرفًا. */
 async function translateFree(text, from, to) {
@@ -2160,7 +2262,7 @@ function renderSettings() {
 function translationSettings() {
   const st = S.settings;
   const key = el('input', { class: 'input', type: 'password', id: 'claudeKey', placeholder: 'sk-ant-…', value: st.claudeKey, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'مفتاح Claude API', style: 'max-width:280px;direction:ltr' });
-  const status = el('span', { class: 'muted', style: 'font-size:13px' }, st.claudeKey ? 'المفتاح محفوظ على هذا الجهاز فقط.' : 'بلا مفتاح: يُفتح Claude نفسه بالنص المحدد.');
+  const status = el('span', { class: 'muted', style: 'font-size:13px' }, st.claudeKey ? 'المفتاح محفوظ على هذا الجهاز فقط.' : 'بلا مفتاح: تظهر ترجمة سريعة في النافذة نفسها.');
   const save = () => { st.claudeKey = key.value.trim(); saveSettings(); status.textContent = st.claudeKey ? 'حُفظ المفتاح على هذا الجهاز فقط.' : 'أُزيل المفتاح.'; };
   key.addEventListener('change', save);
   const test = el('button', { class: 'btn', onclick: async () => {
@@ -2169,13 +2271,10 @@ function translationSettings() {
     try { const r = await translateClaudeApi('sovereignty', 'ar', () => {}); status.textContent = `يعمل. مثال: sovereignty ← ${r.split('\n')[0].slice(0, 40)}`; }
     catch (e) { status.textContent = `لم ينجح: ${e.reason || 'خطأ غير متوقع'}.`; }
   } }, 'اختبار');
-  const seg = el('div', { class: 'seg' }, ...[['claude', 'فتح Claude'], ['deepl', 'فتح DeepL'], ['quick', 'ترجمة سريعة فقط']].map(([k, l]) =>
-    el('button', { 'aria-pressed': String((st.noKeyTranslator || 'claude') === k), onclick: () => { st.noKeyTranslator = k; saveSettings(); renderSettings(); } }, l)));
   return el('div', { class: 'set-row' },
     el('div', { class: 'l' }, el('b', {}, 'المترجم الافتراضي: المساعد الأكاديمي (Claude)'),
-      el('span', {}, 'يترجم بمصطلحات العلوم السياسية والعلاقات الدولية والدراسات الأمنية والقانون الدولي. مع مفتاح Claude API (من console.anthropic.com) تتم الترجمة داخل التطبيق مباشرة؛ وإن تعذّرت ينتقل إلى DeepL ثم إلى الترجمة السريعة.'),
-      el('div', { class: 'row', style: 'margin-top:10px' }, key, test), status,
-      el('div', { style: 'margin-top:10px;font-size:14px' }, 'حين لا يوجد مفتاح:'), seg));
+      el('span', {}, 'يترجم بمصطلحات العلوم السياسية والعلاقات الدولية والدراسات الأمنية والقانون الدولي، داخل نافذة مصغّرة فوق الصفحة دون مغادرة التطبيق. يحتاج مفتاح Claude API (من console.anthropic.com)؛ وبدونه أو عند التعذّر تظهر ترجمة Google السريعة في النافذة نفسها.'),
+      el('div', { class: 'row', style: 'margin-top:10px' }, key, test), status));
 }
 async function exportBackup() {
   const dump = { app: 'raff', version: 1, at: new Date().toISOString(), settings: { ...S.settings, claudeKey: '' }, books: S.books, shelves: S.shelves, notes: S.notes, marks: S.marks, daily: Object.values(S.daily), ink: {}, ocr: {} };

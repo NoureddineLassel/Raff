@@ -331,6 +331,12 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 .tr-note { font-size: 13px; color: var(--muted); background: var(--surface-2); border-radius: 10px; padding: 8px 10px; margin-top: 10px; line-height: 1.6; }
 .tr-actions { margin-top: 12px; gap: 8px; }
 .tr-actions .btn { min-height: 38px; padding: 6px 12px; font-size: 14px; }
+.tr-ext-l { font-size: 12px; color: var(--muted); margin-inline-start: auto; }
+.tr-ext { font-size: 13px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; padding: 6px 2px; }
+.tr-activate { font-size: 13px; line-height: 1.6; background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; margin-top: 10px; display: grid; gap: 8px; }
+.tr-activate[hidden] { display: none; }
+.tr-activate .row { gap: 8px; flex-wrap: nowrap; }
+.tr-activate .input { min-height: 38px; padding: 6px 10px; }
 a.btn { text-decoration: none; color: var(--ink); }
 a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .dir-label { font-family: var(--font-ui); font-weight: 600; font-size: 14px; letter-spacing: .02em; direction: ltr; unicode-bidi: isolate; }
@@ -358,7 +364,7 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 @keyframes flash { 0%, 40% { box-shadow: 0 0 0 4px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
 /* Annotations drawer (left edge) */
 .drawer { position: absolute; top: 0; bottom: 0; left: 0; width: min(380px, 92%); z-index: 9; background: var(--surface); border-right: 1px solid var(--line);
-  box-shadow: 8px 0 30px -12px rgba(0,0,0,.35); display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); animation: drawerIn .22s ease-out; }
+  box-shadow: 8px 0 30px -12px rgba(0,0,0,.35); display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; animation: drawerIn .22s ease-out; }
 @keyframes drawerIn { from { transform: translateX(-30px); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .drawer { animation: none; } }
 .dr-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px 16px; }
@@ -386,7 +392,22 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 .dr-note { font-size: 13.5px; color: var(--accent); }
 .dr-meta { font-size: 12px; color: var(--muted); }
 .dr-thumb { width: 46px; height: 64px; object-fit: cover; border-radius: 3px; background: var(--page); box-shadow: 0 1px 3px rgba(0,0,0,.2); flex: none; max-width: none; }
-.dr-del { position: absolute; top: 4px; left: 4px; width: 32px; height: 32px; }
+.dr-del { position: absolute; top: 4px; left: 4px; width: 32px; height: 32px; opacity: .55; }
+.dr-item > .dr-open { padding-left: 40px; }
+.dr-del:hover, .dr-del:focus-visible { opacity: 1; color: var(--danger); }
+.dr-del .icon { width: 18px; height: 18px; }
+.dr-pick { min-height: 34px; padding: 2px 12px; font-size: 14px; }
+.dr-check { flex: none; align-self: center; width: 22px; height: 22px; margin-inline-start: 10px; border-radius: 50%; border: 2px solid var(--muted); }
+.dr-item.picked { background: var(--accent-soft); }
+.dr-item.picked .dr-check { border-color: var(--accent); background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E") center / 14px no-repeat; }
+.dr-actions { display: flex; gap: 8px; align-items: center; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); background: var(--surface); }
+.dr-actions[hidden] { display: none; }
+.dr-actions .btn { min-height: 38px; font-size: 14px; padding: 6px 12px; }
+.dr-delall { margin-inline-start: auto; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.dr-delall.armed { background: var(--danger); color: #fff; border-color: var(--danger); }
+.dr-delall:disabled { opacity: .45; }
+.dr-delall .icon { width: 17px; height: 17px; }
+.toast-act { margin-inline-start: 14px; border: 0; background: none; color: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; font-size: 14px; padding: 4px 2px; }
 .stage { touch-action: none; }
 .r-bottom {
   display: flex; align-items: center; gap: 14px; background: var(--surface); border-top: 1px solid var(--line);
