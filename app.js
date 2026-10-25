@@ -332,8 +332,8 @@ function snapAxis(a, b) { // يجعل الخط أفقيًا أو عموديًا 
 function recognizeShape(P) {
   const L = pathLen(P); if (L < 30) return null;
   const R = resample(P, 72), a = R[0], z = R.at(-1), chord = dist(a, z);
-  if (chord / L > 0.93 && Math.max(...R.map((p) => segDist(p, a, z))) < Math.max(5, chord * 0.06))
-    return { kind: 'line', pts: [a, snapAxis(a, z)] };
+  const line = fitLine(R, L);
+  if (line) return { kind: 'line', pts: [line[0], snapAxis(line[0], line[1])] };
   const closed = chord < Math.max(18, L * 0.2);
   if (closed) {
     // القطع الناقص: محوره من التحليل إلى المكوّنات الرئيسية
@@ -375,6 +375,23 @@ function recognizeShape(P) {
     return { kind: 'polyline', pts: sharpPath(W) };
   }
   return null;
+}
+/** خط مستقيم تقريبي؟ تُهمل الالتواءات الصغيرة عند نزول القلم ورفعه، ويُطابق بأفضل خط يمر بالنقاط. */
+function fitLine(R, L) {
+  const trim = Math.min(14, L * 0.08), cum = [0];
+  for (let i = 1; i < R.length; i++) cum.push(cum[i - 1] + dist(R[i - 1], R[i]));
+  const T = R.filter((_, i) => cum[i] >= trim && cum[i] <= L - trim);
+  if (T.length < 6) return null;
+  const mx = T.reduce((s, p) => s + p[0], 0) / T.length, my = T.reduce((s, p) => s + p[1], 0) / T.length;
+  let sxx = 0, syy = 0, sxy = 0; for (const [x, y] of T) { sxx += (x - mx) ** 2; syy += (y - my) ** 2; sxy += (x - mx) * (y - my); }
+  const th = 0.5 * Math.atan2(2 * sxy, sxx - syy), u = [Math.cos(th), Math.sin(th)];
+  const along = (p) => (p[0] - mx) * u[0] + (p[1] - my) * u[1], across = (p) => Math.abs(-(p[0] - mx) * u[1] + (p[1] - my) * u[0]);
+  const t = T.map(along), span = Math.max(...t) - Math.min(...t), dev = Math.max(...T.map(across));
+  const Lt = pathLen(T);
+  // مستقيم بما يكفي، ولا يعود على نفسه
+  if (span < 24 || span / Lt < 0.9 || dev > Math.max(7, span * 0.08)) return null;
+  const proj = (p) => { const k = along(p); return [mx + k * u[0], my + k * u[1]]; };
+  return [proj(R[0]), proj(R.at(-1))];
 }
 /** نقاط إضافية قرب كل رأس حتى تبقى الزوايا حادة مع رسم المنحنيات الناعم. */
 function sharpPath(V) {
@@ -442,6 +459,13 @@ class Ink {
     host.addEventListener('pointerup', (e) => this.up(e));
     host.addEventListener('pointercancel', (e) => this.up(e));
     host.addEventListener('touchmove', (e) => { if (this.pid != null) e.preventDefault(); }, { passive: false });
+    // في iPad يلغي إيماءُ الضغط المطوّل في النظام (التحديد والعدسة) أحداثَ القلم حين يثبت، فيُمنع على طبقة الرسم
+    host.addEventListener('touchstart', (e) => {
+      if (!this.enabled) return;
+      const stylus = [...e.changedTouches].some((t) => t.touchType === 'stylus');
+      if (stylus || !S.settings.penOnly) e.preventDefault();
+    }, { passive: false });
+    host.addEventListener('contextmenu', (e) => { if (this.enabled) e.preventDefault(); });
   }
   setEnabled(b) { this.enabled = b; this.host.classList.toggle('active', b); }
   load(strokes) { this.strokes = strokes || []; this.undoS = []; this.redoS = []; this.recent = []; clearTimeout(this.lineT); this.draw(); }
@@ -467,7 +491,7 @@ class Ink {
     if (p.tool === 'eraser') { this.erasing = []; this.eraseAt(this.pt(e)); return; }
     clearTimeout(this.lineT);
     this.cur = { t: p.tool, c: p.color, w: p.width, p: [this.pt(e)] };
-    this.holdRef = this.cur.p[0]; this.armHold();
+    this.holdRef = this.cur.p[0]; this.moveT = performance.now(); this.armHold();
     this.drawLive();
   }
   move(e) {
@@ -481,23 +505,26 @@ class Ink {
     for (const ev of evs.length ? evs : [e]) { const q = this.pt(ev); if (this.erasing) this.eraseAt(q); else if (this.cur) this.cur.p.push(q); }
     if (this.cur) {
       const q = this.cur.p.at(-1);
-      if (Math.hypot((q[0] - this.holdRef[0]) * this.w, (q[1] - this.holdRef[1]) * this.h) > 3) { this.holdRef = q; this.armHold(); }
+      if (Math.hypot((q[0] - this.holdRef[0]) * this.w, (q[1] - this.holdRef[1]) * this.h) > 4) { this.holdRef = q; this.moveT = performance.now(); this.armHold(); }
       this.drawLive();
     }
   }
   /** الضغط المستمر دون حركة بعد رسم خط أو شكل يجعله مضبوطًا. */
-  armHold() { clearTimeout(this.holdT); if (S.settings.inkShapes !== false) this.holdT = setTimeout(() => this.snap(), 550); }
-  snap() {
-    const s = this.cur; if (!s || s.shape || s.t === 'eraser' || this.pid == null) return;
+  armHold() { clearTimeout(this.holdT); if (S.settings.inkShapes !== false) this.holdT = setTimeout(() => this.snap(), 480); }
+  snap(force) {
+    const s = this.cur; if (!s || s.shape || s.t === 'eraser' || (this.pid == null && !force)) return;
     const shape = recognizeShape(s.p.map(([x, y]) => [x * this.w, y * this.h]));
     if (!shape) return;
     const ps = s.p.map((q) => q[2]).sort((a, b) => a - b), pr = ps[ps.length >> 1] || 0.5;
     s.p = shape.pts.map(([x, y]) => [x / this.w, y / this.h, pr]); s.shape = shape.kind;
     this.drawLive();
+    this.host.classList.remove('snapped'); void this.host.offsetWidth; this.host.classList.add('snapped');
     this.host.dispatchEvent(new CustomEvent('inkshape', { bubbles: true, detail: shape.kind }));
   }
   up(e) {
     if (e.pointerId !== this.pid) return; this.pid = null; clearTimeout(this.holdT);
+    // إن ألغى النظامُ القلمَ وهو ثابت، فذلك ضغط مستمر: يُضبط الشكل قبل الحفظ
+    if (e.type === 'pointercancel' && this.cur && S.settings.inkShapes !== false && performance.now() - this.moveT > 250) this.snap(true);
     if (this.erasing) { if (this.erasing.length) { this.undoS.push({ type: 'erase', items: this.erasing }); this.redoS = []; this.commit(); } this.erasing = null; return; }
     if (!this.cur) return;
     const s = this.cur; this.cur = null;
