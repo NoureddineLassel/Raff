@@ -278,6 +278,12 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 .tr-actions .btn { min-height: 38px; padding: 6px 12px; font-size: 14px; }
 a.btn { text-decoration: none; color: var(--ink); }
 a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.dir-label { font-family: var(--font-ui); font-weight: 600; font-size: 14px; letter-spacing: .02em; direction: ltr; unicode-bidi: isolate; }
+.dir-btn { width: auto; padding-inline: 8px; }
+.stage.dragging .textLayer { -webkit-user-select: none; user-select: none; }
+.r-pageno { unicode-bidi: isolate; }
+.stage.ltr .tap-zone.next { left: auto; right: 0; }
+.stage.ltr .tap-zone.prev { right: auto; left: 0; }
 .leaf { position: absolute; top: 0; z-index: 6; pointer-events: none; transform-style: preserve-3d; }
 .leaf.mirror { transform: scaleX(-1); }
 .leaf .strip { position: absolute; top: 0; transform-style: preserve-3d; transform-origin: left center; will-change: transform; }

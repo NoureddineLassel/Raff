@@ -217,9 +217,10 @@ async function addBook(file, title) {
   let pdf;
   try { pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise; } catch { toast(`«${file.name}» ليس ملف PDF صالحًا.`); return; }
   const c = await renderToCanvas(pdf, 1, 360);
+  const dir = await detectDir(pdf);
   const book = {
     id: uid(), title: title || file.name.replace(/\.pdf$/i, ''), pages: pdf.numPages, cover: c.toDataURL('image/jpeg', 0.8),
-    added: Date.now(), lastOpened: 0, lastPage: 1, seen: [], bookmarks: [], secs: 0, size: buf.byteLength,
+    added: Date.now(), lastOpened: 0, lastPage: 1, seen: [], bookmarks: [], secs: 0, size: buf.byteLength, dir,
     shelf: S.settings.shelf !== 'all' && S.shelves.some((x) => x.id === S.settings.shelf) ? S.settings.shelf : null,
   };
   pdf.destroy();
@@ -553,6 +554,9 @@ function toggleMenu(card, b) {
     el('div', { class: 'muted', style: 'padding:6px 12px;font-size:13px' }, `${fmt(b.pages)} صفحة · ${Math.round((b.secs || 0) / 60)} دقيقة قراءة`),
     el('button', { role: 'menuitem', onclick: () => rename() }, icon('pen'), 'إعادة التسمية'),
     el('button', { role: 'menuitem', onclick: () => moveMenu() }, icon('thumbs'), 'نقل إلى رف'),
+    el('button', { role: 'menuitem', onclick: () => { b.dir = b.dir === 'ltr' ? 'rtl' : 'ltr'; Store.put('books', b.id, b); closeMenu(); toast(b.dir === 'ltr' ? `«${b.title}»: التصفح من اليسار إلى اليمين.` : `«${b.title}»: التصفح من اليمين إلى اليسار.`); } },
+      el('span', { class: 'dir-label', style: 'width:22px;text-align:center' }, b.dir === 'ltr' ? 'A→' : '←ع'),
+      b.dir === 'ltr' ? 'اتجاه التصفح: لاتيني (يسار ← يمين)' : 'اتجاه التصفح: عربي (يمين ← يسار)'),
     el('button', { role: 'menuitem', class: 'btn danger', style: 'border:0', onclick: () => confirmDel() }, icon('trash'), 'حذف من المكتبة'),
   );
   const rename = () => {
@@ -611,6 +615,21 @@ function viewMode() {
   return r && r.width > r.height * 1.1 && r.width >= 900 ? 'double' : 'single';
 }
 const stepSize = () => (R.mode === 'double' ? 2 : 1);
+// اتجاه التصفح لكل كتاب: rtl للكتب العربية (الصفحة الأولى يمينًا)، وltr للكتب اللاتينية (الصفحة الأولى يسارًا)
+const isLtr = () => R.book?.dir === 'ltr';
+const slotX = (slot) => (slot.side === 'right' ? R.size.w : 0);
+const spineHinge = (slot) => (slot.side === 'right' ? 'left' : 'right');
+/** يخمّن اتجاه الكتاب من نص صفحاته الأولى؛ الكتب المصوّرة تُعدّ عربية حتى يغيّرها القارئ. */
+async function detectDir(pdf) {
+  let ar = 0, la = 0;
+  for (let n = 1; n <= Math.min(pdf.numPages, 6); n++) {
+    const tc = await pdf.getPage(n).then((p) => p.getTextContent()).catch(() => null);
+    const t = tc ? tc.items.map((i) => i.str || '').join(' ') : '';
+    ar += (t.match(/[\u0600-\u06FF]/g) || []).length;
+    la += (t.match(/[A-Za-z\u00C0-\u024F]/g) || []).length;
+  }
+  return la > 40 && la > ar * 1.5 ? 'ltr' : 'rtl';
+}
 const spreadStart = (n) => (R.mode === 'double' ? (n % 2 ? n : n - 1) : n);
 const spreadPages = (start) => (R.mode === 'double' ? [start, start + 1] : [start]).filter((p) => p >= 1 && p <= R.book.pages);
 
@@ -626,6 +645,7 @@ async function openReader(id, page, withPanel) {
   try { R.pdf = await pdfjsLib.getDocument({ data: buf }).promise; } catch { toast('تعذّر فتح الملف.'); return; }
   R.book = book; R.pen = false; R.thumbs = false; R.drawer = false; R.turning = false; R.panel = !!withPanel || R.panel;
   R.page = page || book.lastPage || 1;
+  if (!book.dir) book.dir = await detectDir(R.pdf);
   book.lastOpened = Date.now(); saveBook(book);
   buildReader();
   readerEl.hidden = false;
@@ -655,16 +675,17 @@ function buildReader() {
   const b = R.book;
   R.els = {};
   const E = R.els;
-  E.pageNo = el('span', { class: 'r-pageno num' });
+  E.pageNo = el('span', { class: 'r-pageno num', dir: 'ltr' });
   E.modeBtn = el('button', { class: 'icon-btn', title: 'صفحة واحدة أو صفحتان', 'aria-label': 'عرض صفحتين', onclick: toggleMode }, icon('spread'));
   E.bmBtn = el('button', { class: 'icon-btn', title: 'علامة مرجعية', 'aria-label': 'علامة مرجعية', onclick: toggleBookmark }, icon('bookmark'));
   E.penBtn = el('button', { class: 'icon-btn', title: 'الكتابة بالقلم', 'aria-label': 'الكتابة بالقلم', onclick: () => setPen(!R.pen) }, icon('pen'));
   E.txtBtn = el('button', { class: 'icon-btn', title: 'النص المستخرج', 'aria-label': 'النص المستخرج', onclick: () => setPanel(!R.panel) }, icon('text'));
   E.thBtn = el('button', { class: 'icon-btn', title: 'الصفحات', 'aria-label': 'الصفحات', onclick: () => setThumbs(!R.thumbs) }, icon('thumbs'));
+  E.dirBtn = el('button', { class: 'icon-btn dir-btn', title: 'اتجاه التصفح', 'aria-label': 'اتجاه التصفح', onclick: toggleDir }, el('span', { class: 'dir-label' }));
   E.drawerBtn = el('button', { class: 'icon-btn', title: 'العلامات والملاحظات', 'aria-label': 'العلامات والملاحظات', onclick: () => setDrawer(!R.drawer) }, icon('list'));
   const top = el('div', { class: 'r-top' },
     el('button', { class: 'icon-btn', 'aria-label': 'العودة إلى المكتبة', title: 'المكتبة', onclick: closeReader }, icon('back')),
-    el('div', { class: 'r-title' }, b.title), E.pageNo, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
+    el('div', { class: 'r-title' }, b.title), E.pageNo, E.dirBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
   E.bookEl = el('div', { class: 'book-view' });
   E.tapNext = el('button', { class: 'tap-zone next', 'aria-label': 'الصفحة التالية', onclick: () => goto(R.page + stepSize(), 1) });
   E.tapPrev = el('button', { class: 'tap-zone prev', 'aria-label': 'الصفحة السابقة', onclick: () => goto(R.page - stepSize(), -1) });
@@ -705,6 +726,7 @@ async function layout() {
   R.size = { w: Math.floor(vp.width * scale), h: Math.floor(vp.height * scale), cols };
   E.bookEl.style.width = R.size.w * cols + 'px'; E.bookEl.style.height = R.size.h + 'px';
   E.bookEl.classList.toggle('double', cols === 2);
+  applyDirChrome();
   buildSlots();
   updateChrome();
   await showSpread(start);
@@ -712,7 +734,8 @@ async function layout() {
 function buildSlots() {
   const E = R.els, { w, h, cols } = R.size;
   E.bookEl.replaceChildren();
-  R.slots = (cols === 2 ? ['right', 'left'] : ['single']).map((side) => {
+  // الخانة الأولى هي الصفحة التي تُقرأ أولًا في الصفحتين المتقابلتين
+  R.slots = (cols === 2 ? (isLtr() ? ['left', 'right'] : ['right', 'left']) : ['single']).map((side) => {
     const canvas = el('canvas', { class: 'pdf' });
     const inkHost = el('div');
     const flag = el('div', { class: 'bookmark-flag', hidden: true });
@@ -931,7 +954,7 @@ async function goto(n, dir = 0) {
   }
   setAnchor(start);
   await showSpread(start);
-  if (anim === 'slide' && dir) { const b = R.els.bookEl; b.classList.remove('turn-next', 'turn-prev'); void b.offsetWidth; b.classList.add(dir > 0 ? 'turn-next' : 'turn-prev'); }
+  if (anim === 'slide' && dir) { const b = R.els.bookEl; b.classList.remove('turn-next', 'turn-prev'); void b.offsetWidth; b.classList.add((dir > 0) !== isLtr() ? 'turn-next' : 'turn-prev'); }
   afterPageChange();
 }
 
@@ -1009,27 +1032,29 @@ async function beginTurn(dir) {
   const { w, h, cols } = R.size;
   let leafOpts, underSlot, underPage, finishSlot, finishPage, restorePage, reverse = false;
   if (cols === 2) {
-    const [right, left] = R.slots;
-    const nextLeft = to + 1 <= R.book.pages ? to + 1 : null;
+    // إلى الأمام تنقلب الصفحة الثانية فوق الكعب، وإلى الخلف تنقلب الأولى
+    const [first, second] = R.slots;
+    const nextSecond = to + 1 <= R.book.pages ? to + 1 : null;
     if (dir > 0) {
-      leafOpts = { front: slotSnapshot(left), back: await pageSnapshot(to), hinge: 'right', x: 0 };
-      underSlot = left; underPage = nextLeft; restorePage = left.page; finishSlot = right; finishPage = to;
+      leafOpts = { front: slotSnapshot(second), back: await pageSnapshot(to), hinge: spineHinge(second), x: slotX(second) };
+      underSlot = second; underPage = nextSecond; restorePage = second.page; finishSlot = first; finishPage = to;
     } else {
-      leafOpts = { front: slotSnapshot(right), back: await pageSnapshot(nextLeft), hinge: 'left', x: w };
-      underSlot = right; underPage = to; restorePage = right.page; finishSlot = left; finishPage = nextLeft;
+      leafOpts = { front: slotSnapshot(first), back: await pageSnapshot(nextSecond), hinge: spineHinge(first), x: slotX(first) };
+      underSlot = first; underPage = to; restorePage = first.page; finishSlot = second; finishPage = nextSecond;
     }
   } else {
-    const slot = R.slots[0];
+    // الصفحة الواحدة تدور حول حافتها الداخلية: اليمنى في الكتاب العربي واليسرى في اللاتيني
+    const slot = R.slots[0], hinge = isLtr() ? 'left' : 'right';
     if (dir > 0) {
-      leafOpts = { front: slotSnapshot(slot), back: null, hinge: 'right', x: 0 };
+      leafOpts = { front: slotSnapshot(slot), back: null, hinge, x: 0 };
       underSlot = slot; underPage = to; restorePage = slot.page;
     } else {
-      leafOpts = { front: await pageSnapshot(to), back: null, hinge: 'right', x: 0 };
+      leafOpts = { front: await pageSnapshot(to), back: null, hinge, x: 0 };
       reverse = true; finishSlot = slot; finishPage = to;
     }
   }
   const leaf = makeLeaf({ w, h, ...leafOpts });
-  const dim = el('div', { class: 'turn-dim', style: `left:${(underSlot || finishSlot).side === 'right' ? w : 0}px;width:${w}px;height:${h}px` });
+  const dim = el('div', { class: 'turn-dim', style: `left:${slotX(underSlot || finishSlot)}px;width:${w}px;height:${h}px` });
   let cur = 0;
   const set = (p) => { cur = p; leaf.set(reverse ? 1 - p : p); dim.style.opacity = ((reverse ? p : 1 - p) * 0.28).toFixed(3); };
   set(0);
@@ -1073,23 +1098,28 @@ function setupDrag(E) {
     if (st.noDrag) return;
     if (!st.dir) {
       if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy)) { if (Math.abs(dy) > 24) st = null; return; }
-      st.dir = dx > 0 ? 1 : -1; suppressClick = true;
+      st.sx = dx > 0 ? 1 : -1; // اتجاه حركة الإصبع على الشاشة
+      st.dir = isLtr() ? -st.sx : st.sx; suppressClick = true;
+      // سحب الصفحة يقلبها ولا يحدّد نصها
+      getSelection().removeAllRanges(); E.stage.classList.add('dragging');
       try { E.stage.setPointerCapture(e.pointerId); } catch {}
       if (!reducedMotion() && (S.settings.turnAnim || 'curl') === 'curl') st.pending = beginTurn(st.dir);
     }
     if (st.pending && !st.turn) { st.turn = await st.pending; if (!st) return; }
     if (st?.turn) {
       const span = R.size.w * R.size.cols;
-      st.p = Math.max(0, Math.min(1, (dx * st.dir) / span));
+      st.p = Math.max(0, Math.min(1, (dx * st.sx) / span));
       st.turn.set(st.p);
     }
   });
   const end = async (e) => {
     if (!st || e.pointerId !== st.id) return;
     const s = st; st = null;
+    E.stage.classList.remove('dragging');
+    if (s.dir) getSelection().removeAllRanges();
     if (s.pending && !s.turn) s.turn = await s.pending;
     if (s.turn) {
-      const complete = s.p > 0.3 || (s.p > 0.1 && s.vx * s.dir > 0.45);
+      const complete = s.p > 0.3 || (s.p > 0.1 && s.vx * s.sx > 0.45);
       await s.turn.finish(complete);
       if (complete) afterPageChange();
       return;
@@ -1120,8 +1150,26 @@ function handleTap(e) {
   }
   if (R.pen) return;
   const sr = R.els.stage.getBoundingClientRect(), fx = (e.clientX - sr.left) / sr.width;
-  if (fx < 0.18) goto(R.page + stepSize(), 1);
-  else if (fx > 0.82) goto(R.page - stepSize(), -1);
+  const leftDir = isLtr() ? -1 : 1; // النقر على الطرف الأيسر: التالية في العربي، والسابقة في اللاتيني
+  if (fx < 0.18) goto(R.page + leftDir * stepSize(), leftDir);
+  else if (fx > 0.82) goto(R.page - leftDir * stepSize(), -leftDir);
+}
+function applyDirChrome() {
+  const E = R.els, ltr = isLtr();
+  E.dirBtn.querySelector('.dir-label').textContent = ltr ? 'A→' : '←ع';
+  E.dirBtn.title = ltr ? 'اتجاه التصفح: من اليسار إلى اليمين (كتاب لاتيني)' : 'اتجاه التصفح: من اليمين إلى اليسار (كتاب عربي)';
+  E.dirBtn.setAttribute('aria-pressed', String(ltr));
+  E.range.style.direction = ltr ? 'ltr' : 'rtl';
+  E.thumbs.dir = ltr ? 'ltr' : 'rtl';
+  E.stage.classList.toggle('ltr', ltr);
+}
+function toggleDir() {
+  if (R.turning) return;
+  R.book.dir = isLtr() ? 'rtl' : 'ltr';
+  Store.put('books', R.book.id, R.book);
+  toast(isLtr() ? 'التصفح من اليسار إلى اليمين (كتاب لاتيني).' : 'التصفح من اليمين إلى اليسار (كتاب عربي).');
+  layout().then(afterPageChange);
+  if (R.thumbs) buildThumbs();
 }
 function toggleMode() {
   S.settings.pageMode = R.mode === 'double' ? 'single' : 'double';
@@ -1202,8 +1250,9 @@ function buildThumbs() {
 }
 document.addEventListener('keydown', (e) => {
   if (readerEl.hidden || /input|textarea/i.test(e.target.tagName)) return;
-  if (e.key === 'ArrowLeft') goto(R.page + stepSize(), 1);
-  else if (e.key === 'ArrowRight') goto(R.page - stepSize(), -1);
+  const leftDir = isLtr() ? -1 : 1;
+  if (e.key === 'ArrowLeft') goto(R.page + leftDir * stepSize(), leftDir);
+  else if (e.key === 'ArrowRight') goto(R.page - leftDir * stepSize(), -leftDir);
   else if (e.key === 'Escape') { if ($('.sel-bar') || $('.pop')) { hideSelBar(); getSelection().removeAllRanges(); } else if (R.drawer) setDrawer(false); else closeReader(); }
   else if ((e.metaKey || e.ctrlKey) && e.key === 'z' && R.pen) { e.preventDefault(); const k = R.activeInk || R.slots[0]?.ink; e.shiftKey ? k?.redo() : k?.undo(); }
 });
@@ -1421,13 +1470,13 @@ function getTess(langs) {
     workerPath: absUrl('vendor/tesseract/worker-wrap.js'), corePath: absUrl('vendor/tesseract/'), langPath: absUrl('vendor/tessdata'),
     workerBlobURL: false, cacheMethod: 'none',
     logger: (m) => {
-      if (m.status === 'recognizing text') ocrProgress(R.ocrLabel + (langs === 'ara' ? ' — التعرّف على النص' : ' — التعرّف على الكلمات اللاتينية'), m.progress);
+      if (m.status === 'recognizing text') ocrProgress(R.ocrLabel + (langs === 'ara+eng' ? ' — التعرّف على الكلمات اللاتينية' : ' — التعرّف على النص'), m.progress);
       else ocrProgress('تحميل محرّك التعرّف على النص…', m.progress || 0);
     },
   }).then(async (w) => { await w.setParameters({ preserve_interword_spaces: '1' }); return w; })
     .catch((e) => { delete tess[langs]; throw e; }));
 }
-const clean = (t) => (t.includes('«') ? t : t.replace(/»/g, '،')).replace(/\s*\n\s*/g, ' ').replace(/[ \t]{2,}/g, ' ').replace(/\s+([،.؛:؟!])/g, '$1').trim();
+const clean = (t) => (t.includes('«') || !/[\u0600-\u06FF]/.test(t) ? t : t.replace(/»/g, '،')).replace(/\s*\n\s*/g, ' ').replace(/[ \t]{2,}/g, ' ').replace(/\s+([،.؛:؟!])/g, '$1').trim();
 const LATIN = /[A-Za-z]/;
 const ARABIC_CH = /[؀-ۿ]/;
 const JUNK = /[A-Za-z0-9[\]{}()*:;|\\/<>~&@#$%^_=+]/; // ما يكتبه النموذج العربي حين يقرأ حروفًا لاتينية
@@ -1465,6 +1514,7 @@ function joinByGap(items) {
   }, '');
 }
 async function ocrLocal(canvas) {
+  if (isLtr()) return ocrLatin(canvas);
   const { data } = await (await getTess('ara')).recognize(canvas);
   const lines = (data.lines || []).filter((l) => l.bbox).map((l) => ({ bbox: l.bbox, words: (l.words || []).map(ocrWord).filter((w) => w.text) }));
   if (lines.some((l) => l.words.some((w) => JUNK.test(w.text)))) {
@@ -1488,6 +1538,17 @@ async function ocrLocal(canvas) {
   let paras = linesToParas(textLines);
   if (!paras.length) paras = (data.text || '').split(/\n\s*\n/).map(clean).filter(Boolean);
   // أرقام الصفحات والرموز المنفردة ليست فقرات
+  return paras.filter((p) => p.replace(/[^\p{L}]/gu, '').length >= 2);
+}
+/** الكتب اللاتينية: نموذج إنجليزي وحده، وكلمات كل سطر من اليسار إلى اليمين. */
+async function ocrLatin(canvas) {
+  const { data } = await (await getTess('eng')).recognize(canvas);
+  const lines = (data.lines || []).filter((l) => l.bbox).map((l) => ({
+    bbox: l.bbox,
+    text: (l.words || []).map(ocrWord).filter((w) => w.text && !(w.conf < 30 && w.text.length <= 2)).sort((a, b) => a.bbox.x0 - b.bbox.x0).map((w) => w.text).join(' '),
+  })).filter((l) => l.text);
+  let paras = linesToParas(lines);
+  if (!paras.length) paras = (data.text || '').split(/\n\s*\n/).map(clean).filter(Boolean);
   return paras.filter((p) => p.replace(/[^\p{L}]/gu, '').length >= 2);
 }
 // Tesseract يدمج الفقرات أحيانًا، فنقسمها حسب المسافة العمودية بين الأسطر
