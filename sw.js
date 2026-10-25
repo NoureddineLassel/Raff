@@ -1,6 +1,6 @@
 // يحفظ ملفات التطبيق على الجهاز ليفتح فورًا ويعمل دون إنترنت.
 // غيّر VERSION عند كل تحديث لتنزل النسخة الجديدة.
-const VERSION = 'raff-v12';
+const VERSION = 'raff-v13';
 const FONTS = 'raff-fonts';
 const CORE = [
   './', './index.html', './app.js', './manifest.webmanifest',
@@ -12,7 +12,8 @@ const CORE = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
+  // cache: 'reload' يتجاوز ذاكرة المتصفح المؤقتة، فلا تُخزَّن نسخة قديمة من الملفات تحت الإصدار الجديد
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(CORE.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {

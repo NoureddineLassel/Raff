@@ -57,6 +57,14 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
+const APP_VERSION = 'raff-v13'; // يطابق VERSION في sw.js
+// تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
+const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
+  if (!this.on) return;
+  if (k === 'ev') this.n[v] = (this.n[v] || 0) + 1; else this[k] = v;
+  if (!this.el || !this.el.isConnected) { this.el = el('pre', { class: 'ink-diag', dir: 'ltr' }); document.body.append(this.el); }
+  this.el.textContent = `${APP_VERSION}\n${Object.entries(this.n).map(([a, b]) => `${a}: ${b}`).join('\n')}\nlast: ${this.last}\nhold: ${this.hold}\nshape: ${this.shape}`;
+} };
 function saveLater(key, fn, ms = 500) {
   const prev = later.get(key); if (prev) clearTimeout(prev.t);
   later.set(key, { fn, t: setTimeout(() => { later.delete(key); fn(); }, ms) });
@@ -458,6 +466,8 @@ class Ink {
     host.addEventListener('pointermove', (e) => this.move(e));
     host.addEventListener('pointerup', (e) => this.up(e));
     host.addEventListener('pointercancel', (e) => this.up(e));
+    if (inkDiag.on) for (const t of ['pointerdown', 'pointerup', 'pointercancel', 'touchstart', 'touchend', 'touchcancel', 'lostpointercapture', 'contextmenu', 'selectstart'])
+      host.addEventListener(t, (e) => { inkDiag.log('ev', `${t}${e.pointerType ? '/' + e.pointerType : ''}${e.changedTouches ? '/' + [...e.changedTouches].map((x) => x.touchType || '?').join(',') : ''}`); inkDiag.log('last', `${t} @${Math.round(performance.now() - (this.moveT || 0))}ms after last move`); }, true);
     host.addEventListener('touchmove', (e) => { if (this.pid != null) e.preventDefault(); }, { passive: false });
     // في iPad يلغي إيماءُ الضغط المطوّل في النظام (التحديد والعدسة) أحداثَ القلم حين يثبت، فيُمنع على طبقة الرسم
     host.addEventListener('touchstart', (e) => {
@@ -506,14 +516,18 @@ class Ink {
     if (this.cur) {
       const q = this.cur.p.at(-1);
       if (Math.hypot((q[0] - this.holdRef[0]) * this.w, (q[1] - this.holdRef[1]) * this.h) > 4) { this.holdRef = q; this.moveT = performance.now(); this.armHold(); }
+      else inkDiag.log('ev', 'move (still)');
       this.drawLive();
     }
   }
   /** الضغط المستمر دون حركة بعد رسم خط أو شكل يجعله مضبوطًا. */
   armHold() { clearTimeout(this.holdT); if (S.settings.inkShapes !== false) this.holdT = setTimeout(() => this.snap(), 480); }
   snap(force) {
-    const s = this.cur; if (!s || s.shape || s.t === 'eraser' || (this.pid == null && !force)) return;
+    const s = this.cur;
+    inkDiag.log('hold', `timer fired${force ? ' (cancel)' : ''}: cur=${!!s} shape=${s?.shape || '-'} tool=${s?.t} pid=${this.pid} pts=${s?.p.length} w=${Math.round(this.w)}`);
+    if (!s || s.shape || s.t === 'eraser' || (this.pid == null && !force)) return;
     const shape = recognizeShape(s.p.map(([x, y]) => [x * this.w, y * this.h]));
+    inkDiag.log('shape', shape ? shape.kind : `none (len ${Math.round(pathLen(s.p.map(([x, y]) => [x * this.w, y * this.h])))}px)`);
     if (!shape) return;
     const ps = s.p.map((q) => q[2]).sort((a, b) => a - b), pr = ps[ps.length >> 1] || 0.5;
     s.p = shape.pts.map(([x, y]) => [x / this.w, y / this.h, pr]); s.shape = shape.kind;
@@ -2556,6 +2570,9 @@ function renderSettings() {
         seg([[true, 'مفعّل'], [false, 'الإصبع يرسم أيضًا']], st.penOnly, (k) => { st.penOnly = k; })),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'ضبط الأشكال تلقائيًا'), el('span', {}, 'ارسم خطًا أو دائرة أو مستطيلًا أو مثلثًا، ثم أبقِ القلم ثابتًا على الشاشة لحظة دون رفعه: يتحوّل إلى شكل مضبوط. الخط المضبوط يبقى طرفه تابعًا للقلم حتى ترفعه.')),
         seg([[true, 'مفعّل'], [false, 'متوقف']], st.inkShapes !== false, (k) => { st.inkShapes = k; })),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'تشخيص القلم'), el('span', {}, 'يعرض في زاوية الشاشة ما يصل من Apple Pencil عند الكتابة والثبات. فعّله، ثم افتح كتابًا وارسم خطًا وأبقِ القلم ثابتًا، والتقط صورة للشاشة.')),
+        seg([[true, 'مفعّل'], [false, 'متوقف']], !!st.inkDiag, (k) => { st.inkDiag = k; inkDiag.on = k; if (!k) inkDiag.el?.remove(); })),
+      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'إصدار التطبيق'), el('span', { dir: 'ltr', class: 'num' }, APP_VERSION))),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'تحسين خط اليد'), el('span', {}, 'ينعّم رجفة اليد في الكتابة العربية واللاتينية، وبعد توقفك لحظة يقوّم السطر المائل ويقرّب كلماته من خط واحد.')),
         seg([[true, 'مفعّل'], [false, 'متوقف']], st.inkRefine !== false, (k) => { st.inkRefine = k; })),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'حجم خط النص المستخرج'), el('span', { class: 'num' }, `${st.readSize} بكسل`)),
@@ -2645,9 +2662,15 @@ async function migrateLocalToCloud() {
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.claude) {
   const hadController = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('sw', e));
-  // عند نزول تحديث جديد يُعاد تحميل التطبيق مرة واحدة ليعمل بالنسخة الجديدة.
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && R.book == null) location.reload(); });
+  const reg = navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch((e) => console.warn('sw', e));
+  // يُبحث عن تحديث كلما عاد التطبيق إلى الواجهة (التطبيق المثبّت على iPad لا يُعاد فتحه من الصفر غالبًا)
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.then((r) => r?.update()).catch(() => {}); });
+  // عند نزول تحديث جديد يُعاد تحميل التطبيق ليعمل بالنسخة الجديدة؛ وداخل كتاب يُعرض زر للتحديث
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return;
+    if (R.book == null) location.reload();
+    else toast('نزل تحديث جديد للتطبيق.', { label: 'تحديث الآن', fn: () => { flushLater(); location.reload(); } });
+  });
 }
 (async function boot() {
   navigator.storage?.persist?.().catch(() => {});
@@ -2669,6 +2692,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.cla
   if (settings) S.settings = { ...structuredClone(DEFAULTS), ...settings, pen: { ...DEFAULTS.pen, ...(settings.pen || {}) } };
   applySkin();
   woodTexture();
+  inkDiag.on = !!S.settings.inkDiag;
   setSaveState('saved');
   showView('library');
   if (!S.settings.seeded) {
