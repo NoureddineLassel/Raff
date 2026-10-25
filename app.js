@@ -57,7 +57,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v13'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v14'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -999,6 +999,43 @@ async function openReader(id, page, withPanel) {
   await buildInkIndex();
   await layout();
   afterPageChange();
+  repairMarkTexts(book).catch((e) => console.warn('repair marks', e));
+}
+// ---------- Repairing highlights saved with reversed Arabic ligatures ----------
+// قبل تصحيح pdf.js كانت الحروف المركّبة (في، لا، على، تج…) تُحفظ مقلوبة. يُطابَق نص كل تظليل قديم
+// مع نص الصفحة المصحّح، مع السماح بتبادل مواضع الحروف داخل المسافة القصيرة نفسها، ثم يُستبدل.
+const MARK_TEXT_V = 2;
+function matchLoose(old, page) {
+  const O = [...old.replace(/[\s\u0000]+/g, '')];
+  const F = [], idx = [];
+  [...page].forEach((c, i) => { if (!/[\s\u0000]/.test(c)) { F.push(c); idx.push(i); } });
+  if (O.length < 2 || O.length > F.length) return null;
+  const bag = (A) => { const m = new Map(); for (const c of A) m.set(c, (m.get(c) || 0) + 1); return m; };
+  const want = bag(O);
+  outer: for (let s = 0; s + O.length <= F.length; s++) {
+    for (let k = 0; k < O.length; k++) {
+      let ok = false;
+      for (let d = -2; d <= 2 && !ok; d++) { const j = k + d; ok = j >= 0 && j < O.length && F[s + j] === O[k]; }
+      if (!ok) continue outer;
+    }
+    const got = bag(F.slice(s, s + O.length));
+    if ([...want].some(([c, n]) => got.get(c) !== n)) continue;
+    return page.slice(idx[s], idx[s + O.length - 1] + 1).replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+async function repairMarkTexts(book) {
+  const todo = S.marks.filter((m) => m.bookId === book.id && m.rects && (m.txv || 0) < MARK_TEXT_V);
+  if (!todo.length) return;
+  const pages = new Map(); let fixed = 0;
+  for (const m of todo) {
+    if (R.book !== book) return; // أُغلق الكتاب
+    if (!pages.has(m.page)) pages.set(m.page, ((await nativeText(m.page)) || []).join(' '));
+    const t = matchLoose(m.text, pages.get(m.page));
+    if (t && t.replace(/\s/g, '') !== m.text.replace(/[\s\u0000]/g, '')) { m.text = t; fixed++; }
+    m.txv = MARK_TEXT_V; Store.put('marks', m.id, m);
+  }
+  if (fixed) { changed('marks'); if (R.drawer) renderDrawer(); toast(`صُحّح نص ${fixed === 1 ? 'تظليل واحد' : fixed === 2 ? 'تظليلين' : `${fmt(fixed)} تظليلات`} كانت حروفه مبعثرة.`); }
 }
 function closeReader() {
   hideSelBar();
@@ -2184,7 +2221,7 @@ function addMarks(style, color, keepBar) {
   if (!curSel) return null;
   const group = uid(), now = Date.now();
   if (curSel.source === 'pdf') {
-    const m = { id: uid(), group, bookId: R.book.id, page: curSel.page, rects: curSel.rects, text: curSel.text, color, style, note: '', created: now };
+    const m = { id: uid(), group, bookId: R.book.id, page: curSel.page, rects: curSel.rects, text: curSel.text.replace(/\u0000/g, ''), color, style, note: '', created: now, txv: MARK_TEXT_V };
     S.marks.push(m); Store.put('marks', m.id, m);
     S.settings.lastColor = color; saveSettings();
     getSelection().removeAllRanges(); curSel = null;
