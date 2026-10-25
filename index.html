@@ -262,7 +262,7 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 .drop-hint { border: 2px dashed var(--line); border-radius: 18px; padding: 18px; text-align: center; color: var(--muted); margin-top: 22px; font-size: 14px; }
 
 /* Reader */
-#reader { position: fixed; inset: 0; z-index: 30; background: var(--paper); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+#reader { position: fixed; inset: 0; z-index: 30; background: var(--paper); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); }
 #reader[hidden] { display: none !important; }
 .r-top {
   display: flex; align-items: center; gap: 6px; padding-block: 8px; padding-top: calc(8px + env(safe-area-inset-top, 0px));

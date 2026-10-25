@@ -57,7 +57,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v14'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v15'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1069,7 +1069,7 @@ function buildReader() {
   E.drawerBtn = el('button', { class: 'icon-btn', title: 'العلامات والملاحظات', 'aria-label': 'العلامات والملاحظات', onclick: () => setDrawer(!R.drawer) }, icon('list'));
   const top = el('div', { class: 'r-top' },
     el('button', { class: 'icon-btn', 'aria-label': 'العودة إلى المكتبة', title: 'المكتبة', onclick: closeReader }, icon('back')),
-    el('div', { class: 'r-title' }, b.title), E.pageNo, E.dirBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
+    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo, E.dirBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
   E.bookEl = el('div', { class: 'book-view' });
   E.tapNext = el('button', { class: 'tap-zone next', 'aria-label': 'الصفحة التالية', onclick: () => goto(R.page + stepSize(), 1) });
   E.tapPrev = el('button', { class: 'tap-zone prev', 'aria-label': 'الصفحة السابقة', onclick: () => goto(R.page - stepSize(), -1) });
