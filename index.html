@@ -295,6 +295,9 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 .turn-dim { position: absolute; top: 0; z-index: 5; pointer-events: none; background: linear-gradient(90deg, rgba(0,0,0,.9), rgba(0,0,0,.55)); opacity: 0; }
 .pg-label { font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--muted); margin: 18px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .ocr-text section:first-child .pg-label { margin-top: 0; }
+.pg-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pg-label .copy-pg { width: 34px; height: 34px; color: var(--muted); }
+.pg-label .copy-pg .icon { width: 18px; height: 18px; }
 .ocr-text mark.flash { animation: flash 1.4s ease-out; }
 @keyframes flash { 0%, 40% { box-shadow: 0 0 0 4px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
 /* Annotations drawer (left edge) */

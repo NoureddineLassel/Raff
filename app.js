@@ -1389,12 +1389,14 @@ function renderPanel(list) {
     el('h2', {}, pages.length > 1 ? `نص الصفحتين ${pages.join('–')}` : `نص الصفحة ${pages[0]}`),
     el('button', { class: 'icon-btn', title: 'تصغير الخط', 'aria-label': 'تصغير الخط', onclick: () => setReadSize(-2) }, el('span', { style: 'font-size:14px;font-weight:600' }, 'أ-')),
     el('button', { class: 'icon-btn', title: 'تكبير الخط', 'aria-label': 'تكبير الخط', onclick: () => setReadSize(2) }, el('span', { style: 'font-size:18px;font-weight:600' }, 'أ+')),
+    missing.length < pages.length ? el('button', { class: 'icon-btn', title: 'نسخ النص', 'aria-label': 'نسخ النص المستخرج', onclick: () => copyPanelText(list) }, icon('copy')) : null,
     missing.length < pages.length ? el('button', { class: 'btn ghost', disabled: R.ocrBusy, onclick: () => runOCR(pages, true) }, icon('scan'), 'إعادة الاستخراج') : null,
     el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => setPanel(false) }, icon('close')));
   E.progress = el('div', { class: 'progress', hidden: !R.ocrBusy }, el('span', {}, R.ocrStatus || ''), el('div', { class: 'bar' }, el('i', { style: `width:${(R.ocrPct || 0) * 100}%` })));
   const body = el('div', { class: 'ocr-text', id: 'ocrText', lang: 'ar', style: `--read-size:${S.settings.readSize}px` });
   for (const { n, rec } of list) {
-    const sec = el('section', { 'data-page': n }, pages.length > 1 ? el('h3', { class: 'pg-label' }, `الصفحة ${n}`) : null);
+    const sec = el('section', { 'data-page': n }, pages.length > 1 ? el('h3', { class: 'pg-label' }, el('span', {}, `الصفحة ${n}`),
+      rec?.paras.length ? el('button', { class: 'icon-btn copy-pg', title: `نسخ نص الصفحة ${n}`, 'aria-label': `نسخ نص الصفحة ${n}`, onclick: () => copyPanelText([{ n, rec }]) }, icon('copy')) : null) : null);
     if (rec) {
       rec.paras.forEach((t, i) => sec.append(paraEl(t, i, n)));
       if (!rec.paras.length) sec.append(el('p', { class: 'muted' }, 'لم يُعثر على نص في هذه الصفحة.'));
@@ -1411,6 +1413,21 @@ function renderPanel(list) {
     ? 'المحرّك: Claude. تُرسل صورة الصفحة إلى Claude لقراءتها.' : 'يعمل الاستخراج على الجهاز دون إرسال الصفحة إلى أي خادم، ويتعرّف على العربية والحروف اللاتينية معًا.'));
   body.addEventListener('click', onMarkTap);
   E.panel.replaceChildren(head, E.progress, body);
+}
+/** ينسخ النص المستخرج كاملًا، فقراته مفصولة بسطر فارغ. */
+async function copyPanelText(list) {
+  const withText = list.filter((x) => x.rec?.paras.length);
+  const text = withText.map((x) => x.rec.paras.join('\n\n')).join('\n\n');
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(withText.length > 1 ? `نُسخ نص الصفحتين ${withText.map((x) => x.n).join(' و')}.` : `نُسخ نص الصفحة ${withText[0].n}.`);
+  } catch {
+    // إن رفض المتصفح النسخ يُحدَّد النص ليُنسخ من قائمة iPad
+    const root = withText.length === 1 ? $(`#ocrText section[data-page="${withText[0].n}"]`) : $('#ocrText');
+    if (root) { const r = document.createRange(); r.selectNodeContents(root); getSelection().removeAllRanges(); getSelection().addRange(r); }
+    toast('حُدّد النص. اضغط «نسخ» من قائمة iPad.');
+  }
 }
 function setReadSize(d) { S.settings.readSize = Math.max(16, Math.min(34, S.settings.readSize + d)); saveSettings(); const t = $('#ocrText'); if (t) t.style.setProperty('--read-size', S.settings.readSize + 'px'); }
 function paraEl(text, i, page) {
