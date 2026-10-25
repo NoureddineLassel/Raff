@@ -428,12 +428,41 @@ const SHELF_THEMES = {
   ebony: { name: 'أبنوس', back: '#2B2624', hi: '#5A4C43', board: '#2E2420', lo: '#120D0B', ink: '#EEE7DE', grain: true },
   green: { name: 'مكتبة خضراء', back: '#1F4A43', hi: '#9A7550', board: '#6B4A30', lo: '#3E2A1D', ink: '#EAF2EE', grain: true },
   white: { name: 'أبيض حديث', back: '#F3F4F2', hi: '#FFFFFF', board: '#DEE1DC', lo: '#B9BDB6', ink: '#1C2220', grain: false },
+  classic: { name: 'مكتبة خشبية تقليدية', back: '#2E1B10', hi: '#B07A48', board: '#7A4A26', lo: '#2A170C', ink: '#F4E7D2', grain: false, classic: true },
   glass: { name: 'زجاج', back: '#E3EEEE', hi: 'rgba(255,255,255,.95)', board: 'rgba(186,212,211,.9)', lo: 'rgba(110,150,150,.75)', ink: '#1C2A28', grain: false },
 };
 const SKINS = [['auto', 'تلقائي'], ['light', 'فاتح'], ['sepia', 'ورقي'], ['dark', 'داكن']];
 function shelfVars(key) {
   const t = SHELF_THEMES[key] || SHELF_THEMES.walnut;
   return `--sh-back:${t.back};--sh-hi:${t.hi};--sh-board:${t.board};--sh-lo:${t.lo};--sh-ink:${t.ink};--sh-grain:${t.grain ? 'var(--grain)' : 'none'}`;
+}
+const shelfCls = (key) => SHELF_THEMES[key]?.classic ? ' classic' : '';
+// Procedural wood grain for the classic bookcase: drawn once, exposed as --wood-h / --wood-v.
+function woodTexture() {
+  const W = 512, H = 256, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(W, H), d = img.data;
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const G = 32, grid = Array.from({ length: G * G }, rnd);
+  const lerp = (a, b, t) => a + (b - a) * t, sm = (t) => t * t * (3 - 2 * t);
+  const noise = (x, y) => { // tileable value noise, x,y in grid units
+    const xi = Math.floor(x), yi = Math.floor(y), xf = sm(x - xi), yf = sm(y - yi), at = (i, j) => grid[((j % G + G) % G) * G + ((i % G + G) % G)];
+    return lerp(lerp(at(xi, yi), at(xi + 1, yi), xf), lerp(at(xi, yi + 1), at(xi + 1, yi + 1), xf), yf);
+  };
+  const fine = new Float32Array(H).map(() => rnd());
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const warp = noise(x / 64, y / 32) * 6 + noise(x / 16, y / 8) * 0.8;
+    const ring = Math.sin((y / 256) * 2 * Math.PI * 9 + warp * 2.2) * 0.5 + 0.5;
+    const streak = fine[(y + Math.round(noise(x / 40, y / 20) * 10)) % H];
+    const v = 0.72 + ring * 0.22 + (streak - 0.5) * 0.12 + (noise(x / 4, y) - 0.5) * 0.05;
+    const i = (y * W + x) * 4;
+    d[i] = 128 * v; d[i + 1] = 78 * v; d[i + 2] = 42 * v; d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const rot = document.createElement('canvas'); rot.width = H; rot.height = W;
+  const r = rot.getContext('2d'); r.translate(H, 0); r.rotate(Math.PI / 2); r.drawImage(cv, 0, 0);
+  const root = document.documentElement.style;
+  root.setProperty('--wood-h', `url(${cv.toDataURL('image/jpeg', 0.82)})`);
+  root.setProperty('--wood-v', `url(${rot.toDataURL('image/jpeg', 0.82)})`);
 }
 function applySkin() {
   const k = S.settings.skin;
@@ -476,7 +505,7 @@ function renderLibrary() {
   const books = shelf ? sorted.filter((b) => b.shelf === shelf.id) : sorted;
 
   const chip = (id, name, n, theme) => el('button', { class: 'shelf-chip', role: 'tab', 'aria-selected': String(S.settings.shelf === id), onclick: () => selectShelf(id) },
-    el('i', { class: 'sw', style: shelfVars(theme) }), name, el('span', { class: 'n num' }, fmt(n)));
+    el('i', { class: 'sw' + shelfCls(theme), style: shelfVars(theme) }), name, el('span', { class: 'n num' }, fmt(n)));
   const tabs = el('div', { class: 'shelf-tabs', role: 'tablist', 'aria-label': 'الرفوف' },
     chip('all', 'كل الكتب', S.books.length, S.settings.allTheme),
     ...S.shelves.map((x) => chip(x.id, x.name, shelfBooks(x.id).length, x.theme)));
@@ -499,8 +528,8 @@ function renderLibrary() {
     Cloud.ok || isInstalled() ? null : el('div', { class: 'notice' }, 'لتثبيت «رفّ» على iPad: اضغط زر المشاركة في Safari ثم «إضافة إلى الشاشة الرئيسية». يفتح بعدها مباشرة بملء الشاشة، ويعمل دون إنترنت، وتبقى مكتبتك محفوظة على الجهاز.'),
     tabs,
     S.customize ? customizePanel(shelf, themeKey) : null,
-    books.length ? el('div', { class: 'shelf', style: shelfVars(themeKey) }, books.map(bookCard))
-      : el('div', { class: 'shelf empty-shelf', style: shelfVars(themeKey) },
+    books.length ? el('div', { class: 'shelf' + shelfCls(themeKey), style: shelfVars(themeKey) }, books.map(bookCard))
+      : el('div', { class: 'shelf empty-shelf' + shelfCls(themeKey), style: shelfVars(themeKey) },
           el('p', {}, shelf ? 'هذا الرف فارغ. أضف ملف PDF إليه، أو انقل كتابًا من قائمة ⋯ تحت غلافه.' : 'لا توجد كتب بعد.'),
           el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, 'إضافة ملف PDF')),
     el('div', { class: 'drop-hint' }, 'اسحب ملفات PDF إلى هنا، أو اخترها من تطبيق «الملفات» على iPad عبر زر «إضافة ملف PDF».'),
@@ -522,7 +551,7 @@ function customizePanel(shelf, themeKey) {
   panel.append(
     el('div', { class: 'cz-row' }, el('b', {}, shelf ? 'شكل هذا الرف' : 'شكل رف «كل الكتب»'),
       el('div', { class: 'theme-grid' }, ...Object.entries(SHELF_THEMES).map(([k, t]) => el('button', { class: 'theme-opt', 'aria-pressed': String(themeKey === k), onclick: () => setTheme(k) },
-        el('span', { class: 'theme-prev', style: shelfVars(k) }, el('i'), el('i'), el('i')), t.name)))),
+        el('span', { class: 'theme-prev' + shelfCls(k), style: shelfVars(k) }, el('i'), el('i'), el('i')), t.name)))),
     el('div', { class: 'cz-row' }, el('b', {}, 'مظهر التطبيق'),
       el('div', { class: 'seg' }, ...SKINS.map(([k, l]) => el('button', { 'aria-pressed': String(S.settings.skin === k), onclick: () => { S.settings.skin = k; saveSettings(); applySkin(); renderLibrary(); } }, l)))));
   if (shelf) {
@@ -569,7 +598,7 @@ function toggleMenu(card, b) {
   const moveMenu = () => m.replaceChildren(...[
     el('div', { class: 'muted', style: 'padding:6px 12px;font-size:13px' }, 'اختر الرف'),
     ...S.shelves.map((x) => el('button', { role: 'menuitemradio', 'aria-checked': String(b.shelf === x.id), onclick: () => moveBook(b, x.id) },
-      el('i', { class: 'sw', style: shelfVars(x.theme) }), x.name, b.shelf === x.id ? ' ✓' : '')),
+      el('i', { class: 'sw' + shelfCls(x.theme), style: shelfVars(x.theme) }), x.name, b.shelf === x.id ? ' ✓' : '')),
     S.shelves.length ? null : el('div', { class: 'confirm' }, 'لا توجد رفوف بعد. أنشئ رفًا من زر «رف جديد» أعلى المكتبة.'),
     b.shelf ? el('button', { onclick: () => moveBook(b, null) }, 'إخراجه من الرف') : null,
     el('button', { onclick: base }, 'رجوع'),
@@ -950,7 +979,7 @@ async function goto(n, dir = 0) {
   const anim = reducedMotion() ? 'none' : (S.settings.turnAnim || 'curl');
   if (anim === 'curl' && Math.abs(start - from) === stepSize()) {
     const t = await beginTurn(dir);
-    if (t) { await t.finish(true, 560); afterPageChange(); return; }
+    if (t) { await t.finish(true, 620); afterPageChange(); return; }
   }
   setAnchor(start);
   await showSpread(start);
@@ -958,56 +987,95 @@ async function goto(n, dir = 0) {
   afterPageChange();
 }
 
-// ---------- Page turn (3D) ----------
-// الورقة المقلوبة مقسومة إلى شرائح متداخلة، كل شريحة تدور قليلًا أكثر من التي قبلها فتنحني الورقة كالورق الحقيقي.
-const STRIPS = 10;
-function mirrored(src) {
-  if (!src) return null;
-  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
-  const ctx = c.getContext('2d'); ctx.translate(c.width, 0); ctx.scale(-1, 1); ctx.drawImage(src, 0, 0);
-  return c;
-}
-function faceCanvas(src, sx, sw, w, h) {
-  const dpr = dprCap();
-  const c = document.createElement('canvas'); c.width = Math.max(1, Math.ceil(sw * dpr)); c.height = Math.round(h * dpr);
-  const ctx = c.getContext('2d');
-  if (!src) { ctx.fillStyle = '#FBFAF6'; ctx.fillRect(0, 0, c.width, c.height); return c; }
-  const k = src.width / w;
-  ctx.drawImage(src, sx * k, 0, sw * k, src.height, 0, 0, c.width, c.height);
-  return c;
-}
-function makeLeaf({ w, h, front, back, hinge, x }) {
-  // يُبنى كأن الكعب على يسار الورقة؛ وللكعب الأيمن تُعكس الحاوية والصورتان معًا.
-  if (hinge === 'right') { front = mirrored(front); back = mirrored(back); }
-  const wrap = el('div', { class: 'leaf' + (hinge === 'right' ? ' mirror' : ''), style: `left:${x}px;width:${w}px;height:${h}px` });
-  const sw = w / STRIPS, strips = [];
-  let parent = wrap;
-  for (let i = 0; i < STRIPS; i++) {
-    const fs = el('i', { class: 'shade' }), bs = el('i', { class: 'shade' });
-    const s = el('div', { class: 'strip', style: `left:${i ? sw : 0}px;width:${sw + 0.7}px;height:${h}px` },
-      el('div', { class: 'face front' }, faceCanvas(front, i * sw, sw + 0.7, w, h), fs),
-      el('div', { class: 'face back' }, faceCanvas(back, w - (i + 1) * sw - 0.7, sw + 0.7, w, h), bs));
-    parent.append(s); parent = s; strips.push({ s, fs, bs });
+// ---------- Page turn (paper curl) ----------
+// الورقة تُطوى كالورق الحقيقي: يبدأ الطي من الزاوية، وخط الطي هو المنصِّف العمودي بين الزاوية وموضعها الجديد،
+// فيظهر وجه الصفحة الحالية، وعلى ظهر الجزء المطوي الصفحة التالية بكتابتها الحقيقية، وتحته الصفحة المكشوفة.
+function clipHalf(poly, side, positive) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const A = poly[i], B = poly[(i + 1) % poly.length];
+    const sa = side(A), sb = side(B), inA = positive ? sa > 0 : sa <= 0, inB = positive ? sb > 0 : sb <= 0;
+    if (inA) out.push(A);
+    if (inA !== inB) { const t = sa / (sa - sb); out.push([A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t]); }
   }
+  return out.length >= 3 ? out : [];
+}
+function makeCurl({ w, h, front, back, hinge, x, corner }) {
+  const E = R.els;
+  const sr = E.stage.getBoundingClientRect(), br = E.bookEl.getBoundingClientRect();
+  const ox = br.left - sr.left, oy = br.top - sr.top, dpr = dprCap();
+  const cv = el('canvas', { class: 'curl-canvas', style: `width:${sr.width}px;height:${sr.height}px` });
+  cv.width = Math.round(sr.width * dpr); cv.height = Math.round(sr.height * dpr);
+  const ctx = cv.getContext('2d');
+  const X0 = x, X1 = x + w;
+  const xs = hinge === 'left' ? X0 : X1; // الكعب
+  const cx = hinge === 'left' ? X1 : X0; // الحافة الحرة
+  const cy = corner === 'top' ? 0 : h;
+  const landX = hinge === 'left' ? X0 - w : X1; // موضع الظهر حين تكتمل الطيّة
+  const sheet = [[X0, 0], [X1, 0], [X1, h], [X0, h]];
+  const S1 = [xs, cy], S2 = [xs, h - cy], diag = Math.hypot(w, h);
+  let P = [cx, cy];
+  // الورقة لا تتمدد: الزاوية تبقى على بعد عرض الصفحة من الكعب على حافتها، وعلى بعد القطر من الزاوية المقابلة
+  const clampP = ([px, py]) => {
+    let dx = px - S1[0], dy = py - S1[1], d = Math.hypot(dx, dy);
+    if (d > w) { px = S1[0] + (dx * w) / d; py = S1[1] + (dy * w) / d; }
+    dx = px - S2[0]; dy = py - S2[1]; d = Math.hypot(dx, dy);
+    if (d > diag) { px = S2[0] + (dx * diag) / d; py = S2[1] + (dy * diag) / d; }
+    return [px, py];
+  };
+  const path = (poly) => { ctx.beginPath(); poly.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py))); ctx.closePath(); };
+  const drawImg = (img, X) => { if (img) ctx.drawImage(img, X, 0, w, h); else { ctx.fillStyle = '#FBFAF6'; ctx.fillRect(X, 0, w, h); } };
+  function draw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(dpr, 0, 0, dpr, dpr * ox, dpr * oy);
+    const vx = cx - P[0], vy = cy - P[1], len = Math.hypot(vx, vy);
+    if (len < 0.5) { drawImg(front, X0); return; }
+    const n = [vx / len, vy / len], M = [(cx + P[0]) / 2, (cy + P[1]) / 2];
+    const side = (q) => (q[0] - M[0]) * n[0] + (q[1] - M[1]) * n[1];
+    const folded = clipHalf(sheet, side, true), flat = clipHalf(sheet, side, false);
+    const flap = folded.map((q) => { const t = 2 * side(q); return [q[0] - t * n[0], q[1] - t * n[1]]; });
+    // 1) الجزء الذي لم يُطوَ بعد من الورقة
+    if (flat.length) { ctx.save(); path(flat); ctx.clip(); drawImg(front, X0); ctx.restore(); }
+    // 2) ظل الطيّة على الصفحة المكشوفة تحتها
+    if (folded.length) {
+      ctx.save(); path(folded); ctx.clip();
+      const L = Math.min(len * 0.55, w * 0.45) + 1, g = ctx.createLinearGradient(M[0], M[1], M[0] + n[0] * L, M[1] + n[1] * L);
+      g.addColorStop(0, 'rgba(0,0,0,.34)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g; ctx.fillRect(X0 - w, -h, 3 * w, 3 * h); ctx.restore();
+    }
+    if (!flap.length) return;
+    // 3) الجزء المطوي: ظل يسقط تحته، ثم ظهر الورقة بالصفحة التالية معكوسة كما على الورق
+    ctx.save(); path(flap);
+    ctx.shadowColor = 'rgba(0,0,0,.38)'; ctx.shadowBlur = 20 * dpr; ctx.shadowOffsetX = (n[0] < 0 ? 4 : -4) * dpr;
+    ctx.fillStyle = '#FBFAF6'; ctx.fill(); ctx.restore();
+    ctx.save(); path(flap); ctx.clip();
+    const k = 2 * (M[0] * n[0] + M[1] * n[1]);
+    ctx.transform(1 - 2 * n[0] * n[0], -2 * n[0] * n[1], -2 * n[0] * n[1], 1 - 2 * n[1] * n[1], k * n[0], k * n[1]); // انعكاس حول خط الطي
+    ctx.transform(-1, 0, 0, 1, 2 * xs, 0); // انعكاس حول الكعب
+    drawImg(back, landX);
+    ctx.restore();
+    // 4) ضوء وظل على انحناءة الورقة قرب خط الطي
+    ctx.save(); path(flap); ctx.clip();
+    const L2 = len / 2 + 1, g2 = ctx.createLinearGradient(M[0], M[1], M[0] - n[0] * L2, M[1] - n[1] * L2);
+    g2.addColorStop(0, 'rgba(0,0,0,.26)'); g2.addColorStop(0.1, 'rgba(0,0,0,.08)');
+    g2.addColorStop(0.45, 'rgba(255,255,255,.10)'); g2.addColorStop(1, 'rgba(0,0,0,.14)');
+    ctx.fillStyle = g2; ctx.fillRect(X0 - 2 * w, -h, 5 * w, 3 * h); ctx.restore();
+  }
+  const lift = corner === 'top' ? 1 : -1;
   return {
-    el: wrap,
-    set(p) {
-      const theta = p * 180, bend = Math.sin(Math.PI * p) * 46;
-      const first = Math.max(0, Math.min(180, theta - bend / 2)), step = bend / (STRIPS - 1);
-      // الظل يتدرّج داخل كل شريحة من قيمتها إلى قيمة جارتها، فلا تظهر حدود بين الشرائح
-      let acc = 0; const fa = [], ba = [];
-      strips.forEach((st, i) => {
-        const a = i ? step : first; acc += a;
-        st.s.style.transform = `rotateY(${-a}deg)`;
-        const c = Math.cos(((acc - a / 2) * Math.PI) / 180);
-        fa.push(0.34 * (1 - Math.max(0, c)) + 0.05 * Math.sin(Math.PI * p));
-        ba.push(0.30 * (1 - Math.max(0, -c)));
-      });
-      const g = (x, y) => `linear-gradient(90deg, rgba(0,0,0,${x.toFixed(3)}), rgba(0,0,0,${y.toFixed(3)}))`;
-      strips.forEach((st, i) => {
-        st.fs.style.background = g(fa[i], fa[i + 1] ?? fa[i]);
-        st.bs.style.background = g(ba[i + 1] ?? ba[i], ba[i]);
-      });
+    el: cv, cx, cy, xs,
+    get P() { return P.slice(); },
+    point(px, py) { P = clampP([px, py]); draw(); },
+    /** التقدّم: نصف المسافة من الحافة الحرة إلى موضعها بعد القلب. */
+    progress() { return Math.min(1, Math.abs(P[0] - cx) / (2 * w)); },
+    /** مسار القلب الآلي: ترتفع الزاوية أولًا قطريًا، ثم يستقيم خط الطي حتى تنقلب الصفحة كلها. */
+    set(p) { this.point(cx + (2 * xs - 2 * cx) * p, cy + lift * Math.sin(Math.PI * p) * h * 0.32); },
+    /** سحب الإصبع: تتبع الزاوية الإصبع، مع رفع خفيف يجعل الطي يبدأ من الزاوية. */
+    drag(dx, dy) {
+      const prog = Math.min(1, Math.abs(dx) / (2 * w));
+      this.point(cx + dx, cy + dy + lift * Math.sin(Math.PI * prog) * h * 0.22);
+      return this.progress();
     },
   };
 }
@@ -1024,7 +1092,8 @@ function animateP(from, to, ms, onFrame) {
   });
 }
 /** يجهّز تقليب صفحة واحدة في الاتجاه dir (1 = التالية). يعيد أداة تحكم بالتقدّم، أو null عند طرف الكتاب. */
-async function beginTurn(dir) {
+/** يجهّز تقليب صفحة واحدة في الاتجاه dir (1 = التالية). يعيد أداة تحكم بالتقدّم، أو null عند طرف الكتاب. */
+async function beginTurn(dir, opts = {}) {
   if (R.turning || !R.size) return null;
   const from = R.page, to = from + dir * stepSize();
   if (to < 1 || to > R.book.pages) return null;
@@ -1046,25 +1115,33 @@ async function beginTurn(dir) {
     // الصفحة الواحدة تدور حول حافتها الداخلية: اليمنى في الكتاب العربي واليسرى في اللاتيني
     const slot = R.slots[0], hinge = isLtr() ? 'left' : 'right';
     if (dir > 0) {
-      leafOpts = { front: slotSnapshot(slot), back: null, hinge, x: 0 };
+      leafOpts = { front: slotSnapshot(slot), back: await pageSnapshot(to), hinge, x: 0 };
       underSlot = slot; underPage = to; restorePage = slot.page;
     } else {
-      leafOpts = { front: await pageSnapshot(to), back: null, hinge, x: 0 };
+      leafOpts = { front: await pageSnapshot(to), back: slotSnapshot(slot), hinge, x: 0 };
       reverse = true; finishSlot = slot; finishPage = to;
     }
   }
-  const leaf = makeLeaf({ w, h, ...leafOpts });
-  const dim = el('div', { class: 'turn-dim', style: `left:${slotX(underSlot || finishSlot)}px;width:${w}px;height:${h}px` });
-  let cur = 0;
-  const set = (p) => { cur = p; leaf.set(reverse ? 1 - p : p); dim.style.opacity = ((reverse ? p : 1 - p) * 0.28).toFixed(3); };
+  // الزاوية التي تُمسك: العليا إن بدأ السحب في النصف العلوي من الصفحة
+  const top = opts.clientY != null && opts.clientY - R.els.bookEl.getBoundingClientRect().top < h / 2;
+  const curl = makeCurl({ w, h, ...leafOpts, corner: top ? 'top' : 'bottom' });
+  let cur = 0, byFinger = false;
+  const set = (p) => { cur = p; byFinger = false; curl.set(reverse ? 1 - p : p); };
   set(0);
-  R.els.bookEl.append(dim, leaf.el);
+  R.els.stage.append(curl.el);
   if (underSlot) await fillSlot(underSlot, underPage);
   return {
     set,
+    drag: reverse ? null : (dx, dy) => { byFinger = true; return curl.drag(dx, dy); },
     async finish(complete, ms) {
-      const target = complete ? 1 : 0;
-      await animateP(cur, target, ms ?? Math.max(180, 480 * Math.abs(target - cur)), set);
+      if (byFinger) {
+        const P0 = curl.P, T = complete ? [2 * curl.xs - curl.cx, curl.cy] : [curl.cx, curl.cy];
+        const dist = Math.hypot(T[0] - P0[0], T[1] - P0[1]) / (2 * w);
+        await animateP(0, 1, ms ?? Math.max(160, 520 * dist), (t) => curl.point(P0[0] + (T[0] - P0[0]) * t, P0[1] + (T[1] - P0[1]) * t));
+      } else {
+        const target = complete ? 1 : 0;
+        await animateP(cur, target, ms ?? Math.max(180, 560 * Math.abs(target - cur)), set);
+      }
       if (complete) {
         if (finishSlot) await fillSlot(finishSlot, finishPage);
         setAnchor(to);
@@ -1072,7 +1149,7 @@ async function beginTurn(dir) {
       } else if (underSlot) {
         await fillSlot(underSlot, restorePage);
       }
-      leaf.el.remove(); dim.remove();
+      curl.el.remove();
       R.turning = false;
     },
   };
@@ -1103,13 +1180,12 @@ function setupDrag(E) {
       // سحب الصفحة يقلبها ولا يحدّد نصها
       getSelection().removeAllRanges(); E.stage.classList.add('dragging');
       try { E.stage.setPointerCapture(e.pointerId); } catch {}
-      if (!reducedMotion() && (S.settings.turnAnim || 'curl') === 'curl') st.pending = beginTurn(st.dir);
+      if (!reducedMotion() && (S.settings.turnAnim || 'curl') === 'curl') st.pending = beginTurn(st.dir, { clientY: st.y });
     }
     if (st.pending && !st.turn) { st.turn = await st.pending; if (!st) return; }
     if (st?.turn) {
-      const span = R.size.w * R.size.cols;
-      st.p = Math.max(0, Math.min(1, (dx * st.sx) / span));
-      st.turn.set(st.p);
+      if (st.turn.drag) st.p = st.turn.drag(dx, dy);
+      else { st.p = Math.max(0, Math.min(1, (dx * st.sx) / (R.size.w * R.size.cols))); st.turn.set(st.p); }
     }
   });
   const end = async (e) => {
@@ -2186,6 +2262,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.cla
   })));
   if (settings) S.settings = { ...structuredClone(DEFAULTS), ...settings, pen: { ...DEFAULTS.pen, ...(settings.pen || {}) } };
   applySkin();
+  woodTexture();
   setSaveState('saved');
   showView('library');
   if (!S.settings.seeded) {
