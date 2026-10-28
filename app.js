@@ -44,6 +44,10 @@ const ICONS = {
   upload: 'M12 16V4M7 9l5-5 5 5M4 20h16',
   type: 'M3 7h18M3 12h18M3 17h10',
   clear: 'M5 5l14 14M4 12a8 8 0 1016 0 8 8 0 10-16 0',
+  tag: 'M3 12V4h8l10 10-8 8zM7.5 8.5h.01',
+  pin: 'M9 4h6M10 4v6l-3 4h10l-3-4V4M12 14v7',
+  autohide: 'M4 4h6v16H4zM14 12h7M17 9l-3 3 3 3',
+  float: 'M3 8h12v12H3zM9 4h12v12M3 11h12',
 };
 function icon(name, extra) {
   const s = el('svg', { class: 'icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', style: extra || null });
@@ -57,7 +61,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v15'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v16'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -815,12 +819,45 @@ function moveBook(b, shelfId) {
 // ---------- Library ----------
 let openMenu = null, addingShelf = false;
 const bookCount = (n) => n === 0 ? 'لا كتب' : n === 1 ? 'كتاب واحد' : n === 2 ? 'كتابان' : n <= 10 ? `${fmt(n)} كتب` : `${fmt(n)} كتابًا`;
+// ---------- Tags and sorting ----------
+// الوسوم تُحفظ في كل كتاب (b.tags)، وقائمتها تُستخلص من الكتب نفسها، فيختفي الوسم حين لا يبقى كتاب يحمله.
+const bookTags = (b) => b.tags || [];
+function allTags(books = S.books) {
+  const m = new Map();
+  for (const b of books) for (const t of bookTags(b)) m.set(t, (m.get(t) || 0) + 1);
+  return [...m].sort((a, z) => z[1] - a[1] || a[0].localeCompare(z[0], 'ar'));
+}
+function setBookTags(b, tags) {
+  b.tags = [...new Set(tags.map((t) => t.trim().replace(/\s+/g, ' ')).filter(Boolean))];
+  saveBook(b); changed('books');
+}
+const SORTS = [
+  ['recent', 'آخر قراءة', (a, b) => (b.lastOpened || b.added) - (a.lastOpened || a.added)],
+  ['added', 'تاريخ الإضافة', (a, b) => b.added - a.added],
+  ['title', 'العنوان', (a, b) => a.title.localeCompare(b.title, 'ar')],
+  ['progress', 'نسبة القراءة', (a, b) => b.seen.length / (b.pages || 1) - a.seen.length / (a.pages || 1)],
+  ['tag', 'الوسم', (a, b) => (bookTags(a)[0] || '￿').localeCompare(bookTags(b)[0] || '￿', 'ar') || a.title.localeCompare(b.title, 'ar')],
+];
+function tagBar(scope) {
+  const sel = new Set(S.settings.tagFilter || []), tags = allTags(scope);
+  const toggle = (t) => { sel.has(t) ? sel.delete(t) : sel.add(t); S.settings.tagFilter = [...sel]; saveSettings(); renderLibrary(); };
+  const sort = el('select', { class: 'sort-sel', 'aria-label': 'ترتيب الكتب', onchange: (e) => { S.settings.sortBy = e.target.value; saveSettings(); renderLibrary(); } },
+    ...SORTS.map(([k, l]) => el('option', { value: k, selected: (S.settings.sortBy || 'recent') === k }, l)));
+  return el('div', { class: 'tag-bar' },
+    tags.length ? el('span', { class: 'muted tb-l' }, icon('tag'), 'الوسوم:') : el('span', { class: 'muted tb-l' }, 'أضف وسومًا لكتبك من قائمة ⋯ تحت الغلاف لتفرزها بها.'),
+    ...tags.map(([t, n]) => el('button', { class: 'tag-chip', 'aria-pressed': String(sel.has(t)), onclick: () => toggle(t) }, t, el('span', { class: 'n num' }, fmt(n)))),
+    sel.size ? el('button', { class: 'btn ghost tb-clear', onclick: () => { S.settings.tagFilter = []; saveSettings(); renderLibrary(); } }, 'إلغاء التصفية') : null,
+    el('label', { class: 'tb-sort' }, el('span', { class: 'muted' }, 'الترتيب:'), sort));
+}
 function renderLibrary() {
   if (S.settings.shelf !== 'all' && !currentShelf()) S.settings.shelf = 'all';
   const shelf = currentShelf();
   const themeKey = shelf ? shelf.theme : S.settings.allTheme;
-  const sorted = [...S.books].sort((a, b) => (b.lastOpened || b.added) - (a.lastOpened || a.added));
-  const books = shelf ? sorted.filter((b) => b.shelf === shelf.id) : sorted;
+  const cmp = (SORTS.find(([k]) => k === S.settings.sortBy) || SORTS[0])[2];
+  const onShelf = (shelf ? S.books.filter((b) => b.shelf === shelf.id) : S.books).slice().sort(cmp);
+  // وسوم التصفية غير الموجودة في هذا الرف لا تُطبَّق عليه
+  const known = new Set(allTags(onShelf).map(([t]) => t)), want = (S.settings.tagFilter || []).filter((t) => known.has(t));
+  const books = want.length ? onShelf.filter((b) => want.every((t) => bookTags(b).includes(t))) : onShelf;
 
   const chip = (id, name, n, theme) => el('button', { class: 'shelf-chip', role: 'tab', 'aria-selected': String(S.settings.shelf === id), onclick: () => selectShelf(id) },
     el('i', { class: 'sw' + shelfCls(theme), style: shelfVars(theme) }), name, el('span', { class: 'n num' }, fmt(n)));
@@ -839,16 +876,17 @@ function renderLibrary() {
 
   const view = el('div', { class: 'view' }, el('div', { class: 'view-inner' },
     el('div', { class: 'view-head' },
-      el('div', {}, el('h1', {}, shelf ? shelf.name : 'المكتبة'), el('div', { class: 'sub' }, `${bookCount(books.length)} على ${shelf ? 'هذا الرف' : 'الرفوف'}`)),
+      el('div', {}, el('h1', {}, shelf ? shelf.name : 'المكتبة'), el('div', { class: 'sub' }, want.length ? `${bookCount(books.length)} بالوسم ${want.map((t) => `«${t}»`).join(' و')}` : `${bookCount(books.length)} على ${shelf ? 'هذا الرف' : 'الرفوف'}`)),
       el('div', { class: 'row' },
         el('button', { class: 'btn', 'aria-pressed': String(S.customize), onclick: () => { S.customize = !S.customize; renderLibrary(); } }, icon('palette'), 'تخصيص'),
         el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, icon('upload'), 'إضافة ملف PDF'))),
     Cloud.ok || isInstalled() ? null : el('div', { class: 'notice' }, 'لتثبيت «رفّ» على iPad: اضغط زر المشاركة في Safari ثم «إضافة إلى الشاشة الرئيسية». يفتح بعدها مباشرة بملء الشاشة، ويعمل دون إنترنت، وتبقى مكتبتك محفوظة على الجهاز.'),
     tabs,
     S.customize ? customizePanel(shelf, themeKey) : null,
+    S.books.length ? tagBar(onShelf) : null,
     books.length ? el('div', { class: 'shelf' + shelfCls(themeKey), style: shelfVars(themeKey) }, books.map(bookCard))
       : el('div', { class: 'shelf empty-shelf' + shelfCls(themeKey), style: shelfVars(themeKey) },
-          el('p', {}, shelf ? 'هذا الرف فارغ. أضف ملف PDF إليه، أو انقل كتابًا من قائمة ⋯ تحت غلافه.' : 'لا توجد كتب بعد.'),
+          el('p', {}, want.length ? 'لا كتب تحمل كل هذه الوسوم معًا.' : shelf ? 'هذا الرف فارغ. أضف ملف PDF إليه، أو انقل كتابًا من قائمة ⋯ تحت غلافه.' : 'لا توجد كتب بعد.'),
           el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, 'إضافة ملف PDF')),
     el('div', { class: 'drop-hint' }, 'اسحب ملفات PDF إلى هنا، أو اخترها من تطبيق «الملفات» على iPad عبر زر «إضافة ملف PDF».'),
   ));
@@ -890,6 +928,7 @@ function bookCard(b) {
     el('button', { class: 'cover-btn', 'aria-label': `فتح ${b.title}`, onclick: () => openReader(b.id) }, el('img', { class: 'cover', src: b.cover, alt: '' })),
     el('div', { class: 'book-progress', title: `${pct}%` }, el('i', { style: `width:${pct}%` })),
     el('div', { class: 'book-meta' }, el('div', { class: 'book-title', title: b.title }, b.title), more),
+    bookTags(b).length ? el('div', { class: 'book-tags', title: bookTags(b).join('، ') }, ...bookTags(b).map((t) => el('span', {}, t))) : null,
   );
   if (b.localOnly && Cloud.ok) card.append(el('span', { class: 'local-badge', title: 'ملف هذا الكتاب محفوظ على هذا الجهاز فقط' }, 'على هذا الجهاز'));
   return card;
@@ -901,6 +940,7 @@ function toggleMenu(card, b) {
     el('div', { class: 'muted', style: 'padding:6px 12px;font-size:13px' }, `${fmt(b.pages)} صفحة · ${Math.round((b.secs || 0) / 60)} دقيقة قراءة`),
     el('button', { role: 'menuitem', onclick: () => rename() }, icon('pen'), 'إعادة التسمية'),
     el('button', { role: 'menuitem', onclick: () => moveMenu() }, icon('thumbs'), 'نقل إلى رف'),
+    el('button', { role: 'menuitem', onclick: () => tagMenu() }, icon('tag'), bookTags(b).length ? `الوسوم (${fmt(bookTags(b).length)})` : 'إضافة وسوم'),
     el('button', { role: 'menuitem', onclick: () => { b.dir = b.dir === 'ltr' ? 'rtl' : 'ltr'; Store.put('books', b.id, b); closeMenu(); toast(b.dir === 'ltr' ? `«${b.title}»: التصفح من اليسار إلى اليمين.` : `«${b.title}»: التصفح من اليمين إلى اليسار.`); } },
       el('span', { class: 'dir-label', style: 'width:22px;text-align:center' }, b.dir === 'ltr' ? 'A→' : '←ع'),
       b.dir === 'ltr' ? 'اتجاه التصفح: لاتيني (يسار ← يمين)' : 'اتجاه التصفح: عربي (يمين ← يسار)'),
@@ -921,6 +961,21 @@ function toggleMenu(card, b) {
     b.shelf ? el('button', { onclick: () => moveBook(b, null) }, 'إخراجه من الرف') : null,
     el('button', { onclick: base }, 'رجوع'),
   ].filter(Boolean));
+  // محرّر الوسوم: الوسوم المعروفة كخيارات تُفعَّل وتُلغى، وحقل لوسم جديد (يمكن كتابة عدة وسوم مفصولة بفاصلة)
+  const tagMenu = () => {
+    const inp = el('input', { class: 'input', placeholder: 'وسم جديد، مثل: نظريات', 'aria-label': 'وسم جديد', enterkeyhint: 'done' });
+    const add = () => { const v = inp.value.split(/[,،]/); if (v.some((x) => x.trim())) { setBookTags(b, bookTags(b).concat(v)); renderLibrary(); } };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); if (e.key === 'Escape') closeMenu(); });
+    const known = allTags().map(([t]) => t);
+    for (const t of bookTags(b)) if (!known.includes(t)) known.push(t);
+    m.replaceChildren(
+      el('div', { class: 'muted', style: 'padding:6px 12px;font-size:13px' }, `وسوم «${b.title}»`),
+      known.length ? el('div', { class: 'tag-pick' }, ...known.map((t) => el('button', { class: 'tag-chip', role: 'menuitemcheckbox', 'aria-checked': String(bookTags(b).includes(t)), 'aria-pressed': String(bookTags(b).includes(t)),
+        onclick: () => { setBookTags(b, bookTags(b).includes(t) ? bookTags(b).filter((x) => x !== t) : bookTags(b).concat(t)); renderLibrary(); } }, t))) : null,
+      el('div', { class: 'tag-add' }, inp, el('button', { class: 'btn primary', onclick: add }, 'إضافة')),
+      el('button', { onclick: base }, 'رجوع'));
+    setTimeout(() => inp.focus(), 0);
+  };
   const confirmDel = () => m.replaceChildren(
     el('div', { class: 'confirm' }, 'سيُحذف الكتاب مع تظليلاته وكتابة القلم عليه.'),
     el('button', { class: 'danger', style: 'color:var(--danger)', onclick: async () => { closeMenu(); await deleteBook(b.id); toast('حُذف الكتاب.'); } }, icon('trash'), 'نعم، احذف'),
@@ -997,6 +1052,8 @@ async function openReader(id, page, withPanel) {
   buildReader();
   readerEl.hidden = false;
   await buildInkIndex();
+  if (['pinned', 'float'].includes(drawerMode()) && S.settings.drawerOpen) setDrawer(true);
+  else setDrawer(false);
   await layout();
   afterPageChange();
   repairMarkTexts(book).catch((e) => console.warn('repair marks', e));
@@ -1078,7 +1135,13 @@ function buildReader() {
   E.thumbs = el('div', { class: 'thumbs', hidden: true }); E.stage.append(E.thumbs);
   E.panel = el('aside', { class: 'panel', 'aria-label': 'النص المستخرج' });
   E.drawer = el('aside', { class: 'drawer', hidden: true, 'aria-label': 'العلامات والملاحظات' });
-  E.body = el('div', { class: 'r-body' }, E.stage, E.panel, E.drawer);
+  E.drHandle = el('button', { class: 'dr-handle', hidden: true, 'aria-label': 'إظهار العلامات والملاحظات', title: 'العلامات والملاحظات', onclick: () => setDrawer(true) }, icon('list'));
+  E.body = el('div', { class: 'r-body' }, E.stage, E.panel, E.drawer, E.drHandle);
+  // الإخفاء التلقائي: أي لمسة خارج الإطار (على الصفحة أو الأدوات) تخفيه
+  E.body.addEventListener('pointerdown', (e) => {
+    if (R.drawer && drawerMode() === 'auto' && !E.drawer.contains(e.target) && !E.drHandle.contains(e.target)) setDrawer(false);
+  }, true);
+  new ResizeObserver(debounce(() => { if (R.drawer && drawerMode() === 'float') saveFloatRect(); }, 300)).observe(E.drawer);
   E.range = el('input', { type: 'range', min: 1, max: b.pages, value: 1, 'aria-label': 'الانتقال إلى صفحة', oninput: (e) => { E.pageNo.textContent = `${e.target.value} / ${b.pages}`; }, onchange: (e) => goto(+e.target.value, 0) });
   E.pct = el('span', { class: 'muted num', style: 'font-size:13px;white-space:nowrap' });
   const bottom = el('div', { class: 'r-bottom' }, E.range, E.pct);
@@ -1706,11 +1769,51 @@ function colorCat(hex) {
   return best;
 }
 const itemColors = (it) => (it.g ? [it.g.color] : it.type === 'ink' ? it.colors : ['red']);
+// أوضاع الإطار: ثابت بجانب الكتاب، أو فوق الصفحة، أو يختفي تلقائيًا عند العودة إلى القراءة، أو نافذة عائمة مستقلة
+const DRAWER_MODES = [['pinned', 'ثابتة', 'pin', 'تبقى مفتوحة بجانب الكتاب، وتصغر الصفحات لتتسع لها'], ['overlay', 'فوق الصفحة', 'list', 'تُفتح فوق الصفحة وتبقى حتى تغلقها'],
+  ['auto', 'إخفاء تلقائي', 'autohide', 'تختفي حين تعود إلى الصفحة، وتظهر من اللسان على حافة الشاشة'], ['float', 'مستقلة', 'float', 'نافذة عائمة تسحبها وتغيّر حجمها، وتبقى مفتوحة أثناء القراءة']];
+const drawerMode = () => S.settings.drawerMode || 'overlay';
 function setDrawer(on) {
+  const E = R.els, mode = drawerMode();
   R.drawer = on; R.picking = null;
-  R.els.drawerBtn.setAttribute('aria-pressed', String(on));
-  R.els.drawer.hidden = !on;
+  E.drawerBtn.setAttribute('aria-pressed', String(on));
+  E.drawer.hidden = !on;
+  E.drawer.classList.toggle('is-float', mode === 'float');
+  E.body.classList.toggle('drawer-pinned', on && mode === 'pinned');
+  E.drHandle.hidden = on || mode !== 'auto';
+  if (mode === 'float') placeFloat(); else E.drawer.style.cssText = '';
+  if (mode === 'pinned' || mode === 'float') { S.settings.drawerOpen = on; saveSettings(); }
   if (on) renderDrawer();
+}
+function setDrawerMode(mode) {
+  if (mode !== 'float') S.settings.drawerDock = mode;
+  S.settings.drawerMode = mode; saveSettings();
+  setDrawer(true);
+}
+function placeFloat() {
+  const d = R.els.drawer, f = S.settings.drawerRect || { x: innerWidth - 400, y: 90, w: 360, h: Math.min(620, innerHeight - 140) };
+  const w = Math.max(280, Math.min(innerWidth - 16, f.w)), h = Math.max(260, Math.min(innerHeight - 16, f.h));
+  const x = Math.max(8, Math.min(innerWidth - w - 8, f.x)), y = Math.max(8, Math.min(innerHeight - h - 8, f.y));
+  d.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px`;
+}
+function saveFloatRect() {
+  const r = R.els.drawer.getBoundingClientRect();
+  if (r.width) { S.settings.drawerRect = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; saveSettings(); }
+}
+/** سحب النافذة العائمة من رأسها. */
+function floatDrag(head) {
+  head.addEventListener('pointerdown', (e) => {
+    if (drawerMode() !== 'float' || e.target.closest('button, input, select') || e.button > 0) return;
+    e.preventDefault();
+    const d = R.els.drawer, r = d.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY;
+    try { head.setPointerCapture(e.pointerId); } catch {}
+    const mv = (ev) => {
+      const x = Math.max(8, Math.min(innerWidth - r.width - 8, r.left + ev.clientX - x0)), y = Math.max(8, Math.min(innerHeight - r.height - 8, r.top + ev.clientY - y0));
+      d.style.left = x + 'px'; d.style.top = y + 'px';
+    };
+    const up = () => { head.removeEventListener('pointermove', mv); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up); saveFloatRect(); };
+    head.addEventListener('pointermove', mv); head.addEventListener('pointerup', up); head.addEventListener('pointercancel', up);
+  });
 }
 function drawerItems() {
   const b = R.book, items = [];
@@ -1746,9 +1849,14 @@ function renderDrawer() {
   if (picking) for (const k of [...picking]) if (!list.some((it) => itemKey(it) === k)) picking.delete(k);
   for (const it of list) ul.append(drawerItem(it, spread.includes(it.page)));
   const pickBtn = list.length || picking ? el('button', { class: 'btn ghost dr-pick', 'aria-pressed': String(!!picking), onclick: () => { R.picking = picking ? null : new Set(); renderDrawer(); } }, picking ? 'تم' : 'تحديد') : null;
-  E.drawer.replaceChildren(
-    el('div', { class: 'dr-head' }, el('h2', {}, 'علامات وملاحظات الكتاب'), pickBtn, el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => setDrawer(false) }, icon('close'))),
-    chips, dots, ul, drawerActions(list));
+  const mode = drawerMode();
+  const modes = el('div', { class: 'dr-modes', role: 'radiogroup', 'aria-label': 'طريقة عرض الإطار' },
+    ...DRAWER_MODES.map(([k, l, ic, tip]) => el('button', { role: 'radio', 'aria-checked': String(mode === k), title: tip, onclick: () => setDrawerMode(k) }, icon(ic), el('span', {}, l))));
+  const head = el('div', { class: 'dr-head' }, el('h2', {}, 'علامات وملاحظات الكتاب'), pickBtn,
+    mode === 'float' ? el('button', { class: 'icon-btn', 'aria-label': 'إرجاع الإطار إلى التطبيق', title: 'إرجاع إلى جانب الكتاب', onclick: () => setDrawerMode(S.settings.drawerDock || 'pinned') }, icon('pin')) : null,
+    el('button', { class: 'icon-btn', 'aria-label': 'إخفاء', title: 'إخفاء', onclick: () => setDrawer(false) }, icon('close')));
+  floatDrag(head);
+  E.drawer.replaceChildren(el('div', { class: 'dr-top' }, head, modes), chips, dots, ul, drawerActions(list));
 }
 // ---------- Deleting from the drawer ----------
 // يُحذف عنصر واحد، أو المحدد، أو كل ما تعرضه التصفية الحالية (بالنوع و/أو اللون)، مع إمكانية التراجع.
@@ -1866,7 +1974,7 @@ function drawerItem(it, current) {
 async function jumpTo(it) {
   await goto(it.page);
   if (!it.g) return;
-  setDrawer(false); // الإطار يغطي جزءًا من الكتاب، فيُغلق ليظهر التظليل
+  if (['overlay', 'auto'].includes(drawerMode())) setDrawer(false); // الإطار يغطي جزءًا من الكتاب، فيُغلق ليظهر التظليل
   if (it.g.rects) {
     await new Promise((r) => setTimeout(r, 60));
     R.slots.forEach((sl) => sl.hl.querySelectorAll(`[data-id="${it.g.id}"]`).forEach((x) => { x.classList.remove('flash'); void x.offsetWidth; x.classList.add('flash'); }));
