@@ -104,7 +104,8 @@ button { cursor: pointer; }
 .icon { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 
 /* App shell */
-#app { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); height: 100%; }
+#app { display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100%; }
+#rail { min-height: 0; overflow: hidden; } /* قائمة الرفوف الطويلة تُمرَّر وحدها، وتبقى أزرار الأقسام ظاهرة */
 #rail {
   display: flex; flex-direction: column; align-items: stretch; gap: 4px; background: var(--surface);
   border-inline-end: 1px solid var(--line); padding-block: 14px; padding-inline-start: env(safe-area-inset-right, 0px);
@@ -116,6 +117,25 @@ button { cursor: pointer; }
 }
 .rail-btn[aria-current="page"] { color: var(--accent); background: var(--accent-soft); }
 .rail-spacer { flex: 1; }
+/* الرفوف تحت زر المكتبة */
+.rail-shelves { display: flex; flex-direction: column; gap: 2px; margin: 2px 6px 6px; padding: 6px 0; border-block: 1px solid var(--line); overflow-y: auto; min-height: 0; flex: 0 1 auto; scrollbar-width: none; }
+.rail-shelves[hidden] { display: none; }
+.rail-shelf { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 3px; border: 0; background: none; border-radius: 10px; color: var(--muted); font-size: 11.5px; line-height: 1.3; min-height: 44px; }
+.rail-shelf .sw { width: 22px; height: 18px; }
+.rail-shelf .rs-name { max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-align: center; overflow-wrap: anywhere; }
+.rail-shelf .rs-n { font-size: 10.5px; opacity: .75; }
+.rail-shelf[aria-selected="true"] { background: var(--ink); color: var(--paper); font-weight: 600; }
+.rail-shelf.add { border: 1px dashed var(--line); margin-top: 4px; }
+.rail-shelf.add .icon { width: 16px; height: 16px; }
+.rs-input { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; font-size: 12px; padding: 8px 6px; border: 1px solid var(--accent); border-radius: 8px; background: var(--surface); color: var(--ink); margin-top: 4px; }
+/* رأس المكتبة الثابت */
+.lib-top { position: sticky; top: 0; z-index: 10; background: var(--paper); margin-inline: -28px; padding: 12px 28px 2px; transition: transform .25s ease, box-shadow .2s; }
+.lib-top .view-head { margin-bottom: 12px; }
+.lib-top .tag-bar { margin: 0 0 10px; }
+.lib-top.stuck { box-shadow: 0 8px 16px -12px rgba(0,0,0,.35); }
+.lib-top.hide { transform: translateY(calc(-100% - 12px)); box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .lib-top { transition: none; } }
+@media (min-width: 761px) { .shelf-tabs.in-lib { display: none; } }
 .save-state { font-size: 11px; color: var(--muted); text-align: center; padding: 6px 4px; min-height: 2.6em; }
 .save-state[data-state="saving"] { color: var(--accent); }
 main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
@@ -630,6 +650,8 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
   .brand, .rail-spacer, .save-state { display: none; }
   .rail-btn { margin: 0; flex: 1; }
   .view-inner { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .lib-top { margin-inline: -16px; padding-inline: 16px; }
+  .rail-shelves { display: none; }
   .notes-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: 40% minmax(0, 1fr); }
   .notes-list { border-inline-end: 0; border-bottom: 1px solid var(--line); }
   .r-body.with-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: 45% minmax(0, 1fr); }
@@ -644,6 +666,7 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
     <div class="brand" aria-hidden="true">رفّ</div>
     <button class="rail-btn" data-view="library" aria-current="page">
       <svg class="icon" viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16.5 5.2l3.8-1 3.2 15.5-3.8 1z" transform="scale(.92) translate(1 1)"/></svg>المكتبة</button>
+    <div id="railShelves" class="rail-shelves" role="tablist" aria-label="الرفوف" hidden></div>
     <button class="rail-btn" data-view="notes">
       <svg class="icon" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>الملاحظات</button>
     <button class="rail-btn" data-view="stats">

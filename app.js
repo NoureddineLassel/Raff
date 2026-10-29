@@ -62,7 +62,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v17'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v18'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -731,11 +731,38 @@ function penBar(getInk, extra) {
 
 // ---------- Rail / views ----------
 const main = $('#main');
-document.querySelectorAll('.rail-btn').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
+document.querySelectorAll('.rail-btn').forEach((b) => b.addEventListener('click', () => {
+  // زر المكتبة يُظهر الرفوف تحته ويخفيها مع كل ضغطة
+  if (b.dataset.view === 'library') {
+    S.settings.railShelves = S.view === 'library' ? !(S.settings.railShelves ?? true) : true;
+    saveSettings();
+    if (S.view === 'library') return renderRailShelves();
+  }
+  showView(b.dataset.view);
+}));
 function showView(v) {
   S.view = v;
   document.querySelectorAll('.rail-btn').forEach((b) => b.setAttribute('aria-current', b.dataset.view === v ? 'page' : 'false'));
   ({ library: renderLibrary, notes: renderNotes, stats: renderStats, settings: renderSettings })[v]();
+  renderRailShelves();
+}
+/** الرفوف في الشريط الجانبي تحت زر المكتبة. */
+function renderRailShelves() {
+  const box = $('#railShelves'); if (!box) return;
+  box.hidden = S.view !== 'library' || !(S.settings.railShelves ?? true);
+  $('.rail-btn[data-view="library"]').setAttribute('aria-expanded', String(!box.hidden));
+  if (box.hidden) return;
+  const item = (id, name, n, theme) => el('button', { class: 'rail-shelf', role: 'tab', 'aria-selected': String(S.settings.shelf === id), title: name, onclick: () => selectShelf(id) },
+    el('i', { class: 'sw' + shelfCls(theme), style: shelfVars(theme) }), el('span', { class: 'rs-name' }, name), el('span', { class: 'rs-n num' }, fmt(n)));
+  const kids = [item('all', 'كل الكتب', S.books.length, S.settings.allTheme), ...S.shelves.map((x) => item(x.id, x.name, shelfBooks(x.id).length, x.theme))];
+  if (addingShelf) {
+    const inp = el('input', { class: 'rs-input', placeholder: 'اسم الرف', 'aria-label': 'اسم الرف الجديد', enterkeyhint: 'done' });
+    const done = () => { const v = inp.value.trim(); addingShelf = false; if (v) addShelf(v); else renderRailShelves(); };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(); if (e.key === 'Escape') { addingShelf = false; renderRailShelves(); } });
+    inp.addEventListener('blur', () => setTimeout(() => { if (addingShelf) done(); }, 150));
+    kids.push(inp); setTimeout(() => inp.focus(), 0);
+  } else kids.push(el('button', { class: 'rail-shelf add', onclick: () => { addingShelf = true; renderRailShelves(); } }, icon('plus'), el('span', { class: 'rs-name' }, 'رف جديد')));
+  box.replaceChildren(...kids);
 }
 bus.addEventListener('change', debounce((e) => {
   if ($('#reader').hidden === false && S.view !== 'stats') return;
@@ -862,7 +889,7 @@ function renderLibrary() {
 
   const chip = (id, name, n, theme) => el('button', { class: 'shelf-chip', role: 'tab', 'aria-selected': String(S.settings.shelf === id), onclick: () => selectShelf(id) },
     el('i', { class: 'sw' + shelfCls(theme), style: shelfVars(theme) }), name, el('span', { class: 'n num' }, fmt(n)));
-  const tabs = el('div', { class: 'shelf-tabs', role: 'tablist', 'aria-label': 'الرفوف' },
+  const tabs = el('div', { class: 'shelf-tabs in-lib', role: 'tablist', 'aria-label': 'الرفوف' },
     chip('all', 'كل الكتب', S.books.length, S.settings.allTheme),
     ...S.shelves.map((x) => chip(x.id, x.name, shelfBooks(x.id).length, x.theme)));
   if (addingShelf) {
@@ -875,16 +902,17 @@ function renderLibrary() {
     tabs.append(el('button', { class: 'shelf-chip add', onclick: () => { addingShelf = true; renderLibrary(); } }, icon('plus'), 'رف جديد'));
   }
 
-  const view = el('div', { class: 'view' }, el('div', { class: 'view-inner' },
-    el('div', { class: 'view-head' },
+  // رأس المكتبة ثابت أعلى الشاشة: يختفي عند النزول بين الكتب، ويعود فور الصعود ولو قليلًا
+  const top = el('div', { class: 'lib-top' }, el('div', { class: 'view-head' },
       el('div', {}, el('h1', {}, shelf ? shelf.name : 'المكتبة'), el('div', { class: 'sub' }, want.length ? `${bookCount(books.length)} بالوسم ${want.map((t) => `«${t}»`).join(' و')}` : `${bookCount(books.length)} على ${shelf ? 'هذا الرف' : 'الرفوف'}`)),
       el('div', { class: 'row' },
         el('button', { class: 'btn', 'aria-pressed': String(S.customize), onclick: () => { S.customize = !S.customize; renderLibrary(); } }, icon('palette'), 'تخصيص'),
         el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, icon('upload'), 'إضافة ملف PDF'))),
+    S.books.length ? tagBar(onShelf) : null);
+  const view = el('div', { class: 'view' }, el('div', { class: 'view-inner' }, top,
     Cloud.ok || isInstalled() ? null : el('div', { class: 'notice' }, 'لتثبيت «رفّ» على iPad: اضغط زر المشاركة في Safari ثم «إضافة إلى الشاشة الرئيسية». يفتح بعدها مباشرة بملء الشاشة، ويعمل دون إنترنت، وتبقى مكتبتك محفوظة على الجهاز.'),
     tabs,
     S.customize ? customizePanel(shelf, themeKey) : null,
-    S.books.length ? tagBar(onShelf) : null,
     books.length ? el('div', { class: 'shelf' + shelfCls(themeKey), style: shelfVars(themeKey) }, books.map(bookCard))
       : el('div', { class: 'shelf empty-shelf' + shelfCls(themeKey), style: shelfVars(themeKey) },
           el('p', {}, want.length ? 'لا كتب تحمل كل هذه الوسوم معًا.' : shelf ? 'هذا الرف فارغ. أضف ملف PDF إليه، أو انقل كتابًا من قائمة ⋯ تحت غلافه.' : 'لا توجد كتب بعد.'),
@@ -893,6 +921,16 @@ function renderLibrary() {
   ));
   const keep = main.querySelector('.view')?.scrollTop || 0;
   main.replaceChildren(view); view.scrollTop = keep;
+  top.classList.toggle('stuck', keep > 8);
+  let lastY = view.scrollTop;
+  view.addEventListener('scroll', () => {
+    const y = view.scrollTop, dy = y - lastY;
+    if (Math.abs(dy) < 4) return;
+    top.classList.toggle('hide', dy > 0 && y > top.offsetHeight + 40);
+    top.classList.toggle('stuck', y > 8);
+    lastY = y;
+  }, { passive: true });
+  renderRailShelves();
 }
 function customizePanel(shelf, themeKey) {
   const setTheme = (k) => {
@@ -925,12 +963,12 @@ function bookCard(b) {
   const pct = b.pages ? Math.round((b.seen.length / b.pages) * 100) : 0;
   const card = el('div', { class: 'book' });
   const more = el('button', { class: 'icon-btn more', 'aria-label': 'خيارات الكتاب', onclick: (e) => { e.stopPropagation(); toggleMenu(card, b); } }, icon('more'));
-  card.append(
+  card.append(...[
     el('button', { class: 'cover-btn', 'aria-label': `فتح ${b.title}`, onclick: () => openReader(b.id) }, el('img', { class: 'cover', src: b.cover, alt: '' })),
     el('div', { class: 'book-progress', title: `${pct}%` }, el('i', { style: `width:${pct}%` })),
     el('div', { class: 'book-meta' }, el('div', { class: 'book-title', title: b.title }, b.title), more),
     bookTags(b).length ? el('div', { class: 'book-tags', title: bookTags(b).join('، ') }, ...bookTags(b).map((t) => el('span', {}, t))) : null,
-  );
+  ].filter(Boolean)); // append الأصلية تكتب null نصًا
   if (b.localOnly && Cloud.ok) card.append(el('span', { class: 'local-badge', title: 'ملف هذا الكتاب محفوظ على هذا الجهاز فقط' }, 'على هذا الجهاز'));
   return card;
 }

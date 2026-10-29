@@ -1,6 +1,6 @@
 // يحفظ ملفات التطبيق على الجهاز ليفتح فورًا ويعمل دون إنترنت.
 // غيّر VERSION عند كل تحديث لتنزل النسخة الجديدة.
-const VERSION = 'raff-v17';
+const VERSION = 'raff-v18';
 const FONTS = 'raff-fonts';
 const CORE = [
   './', './index.html', './app.js', './manifest.webmanifest',
