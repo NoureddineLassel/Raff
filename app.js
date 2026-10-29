@@ -62,7 +62,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v19'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v20'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -771,6 +771,60 @@ function renderRailShelves() {
     kids.push(inp); setTimeout(() => inp.focus(), 0);
   } else kids.push(el('button', { class: 'rail-shelf add', onclick: () => { addingShelf = true; renderRailShelves(); } }, el('span', { class: 'rs-name' }, '+ رف جديد')));
   box.replaceChildren(...kids);
+  kids.slice(1, 1 + S.shelves.length).forEach((k, i) => { k.dataset.idx = i; }); // «كل الكتب» ثابت في الأعلى
+  shelfDrag(box);
+}
+/** ترتيب الرفوف بالسحب: ضغطة مطوّلة بالإصبع (أو سحب بالفأرة) ترفع الرف، ثم يُسحب إلى الأعلى أو الأسفل. */
+function shelfDrag(box) {
+  if (box.dataset.drag) return; box.dataset.drag = '1'; // تُربط مرة واحدة، فالأزرار تُبنى من جديد
+  let d = null, swallow = false;
+  const items = () => [...box.querySelectorAll('.rail-shelf[data-idx]')];
+  const start = () => {
+    d.on = true; swallow = true;
+    d.list = items(); d.h = d.el.getBoundingClientRect().height + 5;
+    d.el.classList.add('dragging'); box.classList.add('sorting');
+    navigator.vibrate?.(8);
+  };
+  box.addEventListener('pointerdown', (e) => {
+    const it = e.target.closest('.rail-shelf[data-idx]'); if (!it || e.button > 0) return;
+    d = { el: it, id: e.pointerId, y0: e.clientY, from: +it.dataset.idx, to: +it.dataset.idx, on: false, mouse: e.pointerType === 'mouse' };
+    if (!d.mouse) d.timer = setTimeout(() => { if (d && !d.on) { start(); try { box.setPointerCapture(d.id); } catch {} } }, 350);
+  });
+  box.addEventListener('pointermove', (e) => {
+    if (!d || e.pointerId !== d.id) return;
+    const dy = e.clientY - d.y0;
+    if (!d.on) {
+      if (Math.abs(dy) > 8) { if (d.mouse) { start(); try { box.setPointerCapture(d.id); } catch {} } else { clearTimeout(d.timer); d = null; } }
+      return;
+    }
+    const n = d.list.length, to = Math.max(0, Math.min(n - 1, d.from + Math.round(dy / d.h)));
+    d.to = to;
+    d.el.style.transform = `translateY(${dy}px) scale(1.06)`;
+    // الرفوف الأخرى تتنحّى لتفسح مكانًا للرف المسحوب
+    d.list.forEach((x, i) => {
+      if (x === d.el) return;
+      const shift = d.from < to && i > d.from && i <= to ? -d.h : d.from > to && i < d.from && i >= to ? d.h : 0;
+      x.style.transform = shift ? `translateY(${shift}px)` : '';
+    });
+  });
+  // أثناء السحب بالإصبع لا تُمرَّر القائمة
+  box.addEventListener('touchmove', (e) => { if (d?.on) e.preventDefault(); }, { passive: false });
+  const end = (e) => {
+    if (!d || e.pointerId !== d.id) return;
+    clearTimeout(d.timer);
+    const { on, from, to } = d; d = null;
+    box.classList.remove('sorting');
+    if (!on) return;
+    if (to !== from) {
+      const [moved] = S.shelves.splice(from, 1); S.shelves.splice(to, 0, moved);
+      S.shelves.forEach((x, i) => { if (x.order !== i) { x.order = i; Store.put('shelves', x.id, x); } });
+      if (S.view === 'library') renderLibrary(); else renderRailShelves();
+    } else renderRailShelves();
+    setTimeout(() => { swallow = false; }, 0);
+  };
+  box.addEventListener('pointerup', end); box.addEventListener('pointercancel', end);
+  box.addEventListener('click', (e) => { if (swallow) { e.stopPropagation(); e.preventDefault(); swallow = false; } }, true);
+  box.addEventListener('contextmenu', (e) => { if (e.target.closest('.rail-shelf')) e.preventDefault(); });
 }
 bus.addEventListener('change', debounce((e) => {
   if ($('#reader').hidden === false && S.view !== 'stats') return;
@@ -834,7 +888,7 @@ function selectShelf(id) { S.settings.shelf = id; saveSettings(); S.customize = 
 function addShelf(name) {
   const used = new Set(S.shelves.map((x) => x.theme));
   const theme = Object.keys(SHELF_THEMES).find((k) => !used.has(k)) || 'walnut';
-  const sh = { id: uid(), name, theme, created: Date.now() };
+  const sh = { id: uid(), name, theme, created: Date.now(), order: S.shelves.length };
   S.shelves.push(sh); Store.put('shelves', sh.id, sh);
   selectShelf(sh.id);
   toast(`أُنشئ رف «${name}». الكتب التي تضيفها الآن تذهب إليه.`);
@@ -3030,7 +3084,10 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.cla
   }
   const [books, shelves, notes, marks, daily, settings] = await Promise.all(
     [Store.all('books'), Store.all('shelves'), Store.all('notes'), Store.all('marks'), Store.all('daily'), Store.get('meta', 'settings')]);
-  S.books = books; S.shelves = shelves; S.notes = notes; S.marks = marks;
+  S.books = books; S.notes = notes; S.marks = marks;
+  // ترتيب الرفوف يختاره القارئ بالسحب؛ الرفوف القديمة بلا ترتيب تأخذ ترتيب إنشائها
+  S.shelves = shelves.sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || (a.created || 0) - (b.created || 0));
+  S.shelves.forEach((x, i) => { if (x.order !== i) { x.order = i; Store.put('shelves', x.id, x); } });
   for (const d of daily) S.daily[d.date] = d;
   for (const n of S.notes) for (const pg of n.pages) pg.id ||= uid();
   await Promise.all(S.notes.flatMap((n) => n.pages.map(async (pg) => {
