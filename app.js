@@ -48,6 +48,7 @@ const ICONS = {
   pin: 'M9 4h6M10 4v6l-3 4h10l-3-4V4M12 14v7',
   autohide: 'M4 4h6v16H4zM14 12h7M17 9l-3 3 3 3',
   float: 'M3 8h12v12H3zM9 4h12v12M3 11h12',
+  zoom: 'M10.5 4a6.5 6.5 0 100 13 6.5 6.5 0 100-13zM15.5 15.5L21 21M8 10.5h5M10.5 8v5',
 };
 function icon(name, extra) {
   const s = el('svg', { class: 'icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', style: extra || null });
@@ -61,7 +62,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v16'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v17'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -485,7 +486,7 @@ class Ink {
   load(strokes) { this.strokes = strokes || []; this.undoS = []; this.redoS = []; this.recent = []; clearTimeout(this.lineT); this.draw(); }
   resize() {
     const r = this.host.getBoundingClientRect(); if (!r.width) return;
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2); this.w = r.width; this.h = r.height;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(8e6 / Math.max(1, r.width * r.height))); this.w = r.width; this.h = r.height; // حدّ للصفحات المكبَّرة
     for (const c of [this.base, this.live]) { c.width = Math.round(r.width * this.dpr); c.height = Math.round(r.height * this.dpr); }
     this.draw();
   }
@@ -719,7 +720,7 @@ function penBar(getInk, extra) {
       el('button', { class: 'icon-btn', title: 'تراجع', 'aria-label': 'تراجع', onclick: () => getInk()?.undo() }, icon('undo')),
       el('button', { class: 'icon-btn', title: 'إعادة', 'aria-label': 'إعادة', onclick: () => getInk()?.redo() }, icon('redo')),
       el('button', { class: 'icon-btn', title: 'مسح الصفحة', 'aria-label': 'مسح الصفحة', onclick: () => { getInk()?.clear(); toast('مُسحت الكتابة. اضغط «تراجع» لاستعادتها.'); } }, icon('clear')),
-      el('button', { class: 'toggle-chip', 'aria-pressed': String(S.settings.penOnly), title: 'عند التفعيل لا يرسم إلا Apple Pencil، والإصبع يقلب الصفحات', onclick: () => { S.settings.penOnly = !S.settings.penOnly; saveSettings(); render(); } }, 'القلم فقط'),
+      el('button', { class: 'toggle-chip', 'aria-pressed': String(S.settings.penOnly), title: 'عند التفعيل لا يرسم إلا Apple Pencil، والإصبع يقلب الصفحات', onclick: () => { S.settings.penOnly = !S.settings.penOnly; saveSettings(); R.els?.stage.classList.toggle('pen-only', S.settings.penOnly); render(); } }, 'القلم فقط'),
       el('button', { class: 'toggle-chip', 'aria-pressed': String(S.settings.inkRefine !== false), title: 'ينعّم الخط المكتوب بيدك ويقوّم السطر المائل بعد توقفك عن الكتابة', onclick: () => { S.settings.inkRefine = S.settings.inkRefine === false; saveSettings(); render(); } }, 'تحسين الخط'),
       ...(extra ? [extra] : []),
     );
@@ -1019,7 +1020,7 @@ function viewMode() {
 const stepSize = () => (R.mode === 'double' ? 2 : 1);
 // اتجاه التصفح لكل كتاب: rtl للكتب العربية (الصفحة الأولى يمينًا)، وltr للكتب اللاتينية (الصفحة الأولى يسارًا)
 const isLtr = () => R.book?.dir === 'ltr';
-const slotX = (slot) => (slot.side === 'right' ? R.size.w : 0);
+const slotX = (slot) => (slot.side === 'right' ? R.size.vw : 0);
 const spineHinge = (slot) => (slot.side === 'right' ? 'left' : 'right');
 /** يخمّن اتجاه الكتاب من نص صفحاته الأولى؛ الكتب المصوّرة تُعدّ عربية حتى يغيّرها القارئ. */
 async function detectDir(pdf) {
@@ -1045,7 +1046,8 @@ async function openReader(id, page, withPanel) {
     return;
   }
   try { R.pdf = await pdfjsLib.getDocument({ data: buf }).promise; } catch { toast('تعذّر فتح الملف.'); return; }
-  R.book = book; R.pen = false; R.thumbs = false; R.drawer = false; R.turning = false; R.panel = !!withPanel || R.panel;
+  R.book = book; R.pen = false; R.thumbs = false; R.drawer = false; R.turning = false; R.panel = !!withPanel || R.panel; R.zoom = 1;
+  if (sizePop) { sizePop.remove(); sizePop = null; }
   R.page = page || book.lastPage || 1;
   if (!book.dir) book.dir = await detectDir(R.pdf);
   book.lastOpened = Date.now(); saveBook(book);
@@ -1124,13 +1126,17 @@ function buildReader() {
   E.thBtn = el('button', { class: 'icon-btn', title: 'الصفحات', 'aria-label': 'الصفحات', onclick: () => setThumbs(!R.thumbs) }, icon('thumbs'));
   E.dirBtn = el('button', { class: 'icon-btn dir-btn', title: 'اتجاه التصفح', 'aria-label': 'اتجاه التصفح', onclick: toggleDir }, el('span', { class: 'dir-label' }));
   E.drawerBtn = el('button', { class: 'icon-btn', title: 'العلامات والملاحظات', 'aria-label': 'العلامات والملاحظات', onclick: () => setDrawer(!R.drawer) }, icon('list'));
+  E.sizeBtn = el('button', { class: 'icon-btn', title: 'حجم الصفحة', 'aria-label': 'حجم الصفحة', 'aria-haspopup': 'dialog', onclick: () => toggleSizePop() }, icon('zoom'));
   const top = el('div', { class: 'r-top' },
     el('button', { class: 'icon-btn', 'aria-label': 'العودة إلى المكتبة', title: 'المكتبة', onclick: closeReader }, icon('back')),
-    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo, E.dirBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
+    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo, E.dirBtn, E.sizeBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
   E.bookEl = el('div', { class: 'book-view' });
   E.tapNext = el('button', { class: 'tap-zone next', 'aria-label': 'الصفحة التالية', onclick: () => goto(R.page + stepSize(), 1) });
   E.tapPrev = el('button', { class: 'tap-zone prev', 'aria-label': 'الصفحة السابقة', onclick: () => goto(R.page - stepSize(), -1) });
-  E.stage = el('div', { class: 'stage' }, E.bookEl, E.tapNext, E.tapPrev);
+  // الصفحة المكبَّرة أو بملاءمة العرض تُمرَّر داخل هذا الإطار
+  E.scroller = el('div', { class: 'scroller' }, el('div', { class: 'scroll-inner' }, E.bookEl));
+  E.stage = el('div', { class: 'stage' }, E.scroller, E.tapNext, E.tapPrev);
+  setupPinch(E);
   E.penBar = penBar(() => R.activeInk || R.slots[0]?.ink); E.penBar.hidden = true; E.stage.append(E.penBar);
   E.thumbs = el('div', { class: 'thumbs', hidden: true }); E.stage.append(E.thumbs);
   E.panel = el('aside', { class: 'panel', 'aria-label': 'النص المستخرج' });
@@ -1169,28 +1175,37 @@ async function layout() {
   const ah = sr.height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
   if (aw <= 0 || ah <= 0) return;
   const cols = R.mode === 'double' ? 2 : 1;
-  const scale = Math.min(aw / (vp.width * cols), ah / vp.height);
-  R.size = { w: Math.floor(vp.width * scale), h: Math.floor(vp.height * scale), cols };
-  E.bookEl.style.width = R.size.w * cols + 'px'; E.bookEl.style.height = R.size.h + 'px';
+  // حجم الصفحة: ملاءمة الصفحة كلها أو العرض، مع قص الهوامش البيضاء إن طُلب، ثم التكبير
+  const view = R.book.view || {}, c = view.trim && R.book.crop ? R.book.crop : NO_CROP;
+  const fw = 1 - c.l - c.r, fh = 1 - c.t - c.b;
+  const fit = view.fit === 'width' ? aw / (vp.width * fw * cols) : Math.min(aw / (vp.width * fw * cols), ah / (vp.height * fh));
+  const scale = fit * (R.zoom || 1);
+  const w = Math.floor(vp.width * scale), h = Math.floor(vp.height * scale);
+  R.size = { w, h, cols, crop: c, vw: Math.round(w * fw), vh: Math.round(h * fh) };
+  E.bookEl.style.width = R.size.vw * cols + 'px'; E.bookEl.style.height = R.size.vh + 'px';
   E.bookEl.classList.toggle('double', cols === 2);
+  E.stage.classList.toggle('wide', R.size.vw * cols > aw + 1);
+  E.stage.classList.toggle('tall', R.size.vh > ah + 1);
   applyDirChrome();
   buildSlots();
   updateChrome();
   await showSpread(start);
 }
 function buildSlots() {
-  const E = R.els, { w, h, cols } = R.size;
+  const E = R.els, { w, h, cols, vw, vh, crop: c } = R.size;
   E.bookEl.replaceChildren();
-  // الخانة الأولى هي الصفحة التي تُقرأ أولًا في الصفحتين المتقابلتين
+  // الخانة الأولى هي الصفحة التي تُقرأ أولًا في الصفحتين المتقابلتين.
+  // كل صفحة كاملة (.pg) داخل نافذة (.pgclip) تُخفي الهوامش المقصوصة، فتبقى إحداثيات التظليل والقلم كما هي.
   R.slots = (cols === 2 ? (isLtr() ? ['left', 'right'] : ['right', 'left']) : ['single']).map((side) => {
-    const canvas = el('canvas', { class: 'pdf' });
+    const canvas = el('canvas', { class: 'pdf', style: `left:${c.l * w}px;top:${c.t * h}px;width:${vw}px;height:${vh}px` });
     const inkHost = el('div');
     const flag = el('div', { class: 'bookmark-flag', hidden: true });
     const hl = el('div', { class: 'hl-layer' });
     const tl = el('div', { class: 'textLayer' });
-    const node = el('div', { class: 'pg', 'data-side': side, style: `left:${side === 'right' ? w : 0}px;width:${w}px;height:${h}px` }, canvas, hl, tl, inkHost, flag);
-    E.bookEl.append(node);
-    const slot = { side, node, canvas, hl, tl, flag, page: null };
+    const node = el('div', { class: 'pg', 'data-side': side, style: `left:${-c.l * w}px;top:${-c.t * h}px;width:${w}px;height:${h}px` }, canvas, hl, tl, inkHost);
+    const clip = el('div', { class: 'pgclip', 'data-side': side, style: `left:${side === 'right' ? vw : 0}px;width:${vw}px;height:${vh}px` }, node, flag);
+    E.bookEl.append(clip);
+    const slot = { side, node, clip, canvas, hl, tl, flag, page: null };
     bindTextLayer(tl);
     slot.ink = new Ink(inkHost, {
       onStart: (k) => { R.activeInk = k; },
@@ -1212,16 +1227,26 @@ function buildSlots() {
 
 // صور الصفحات المرسومة تُحفظ مؤقتًا ليكون التقليب فوريًا
 const pageCache = new Map(), pageInflight = new Map();
+const NO_CROP = { l: 0, t: 0, r: 0, b: 0 };
+// دقة الرسم محدودة بعدد البكسلات، لأن Safari يرفض اللوحات الكبيرة جدًا عند التكبير
+const areaDpr = (w, h, max = 9e6) => Math.min(dprCap(), Math.sqrt(max / Math.max(1, w * h)));
+/** أبعاد الصفحة الكاملة داخل صورة لا تحوي إلا الجزء الظاهر منها (بعد قص الهوامش). */
+function fullBox(canvas) {
+  const c = R.size.crop || NO_CROP, W = canvas.width / (1 - c.l - c.r), H = canvas.height / (1 - c.t - c.b);
+  return { W, H, ox: -c.l * W, oy: -c.t * H };
+}
 async function pageCanvas(n) {
-  const { w, h } = R.size, dpr = dprCap(), key = `${R.book.id}:${n}:${w}`;
+  const { w, h, vw, vh, crop: cr } = R.size, dpr = areaDpr(vw, vh), key = `${R.book.id}:${n}:${w}x${h}:${cr.l},${cr.t},${cr.r},${cr.b}`;
   if (pageCache.has(key)) { const c = pageCache.get(key); pageCache.delete(key); pageCache.set(key, c); return c; }
   if (pageInflight.has(key)) return pageInflight.get(key);
   const job = (async () => {
     const page = await R.pdf.getPage(n);
     const vp1 = page.getViewport({ scale: 1 });
-    const c = document.createElement('canvas'); c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+    // يُرسم الجزء الظاهر وحده بالدقة الكاملة
+    const c = document.createElement('canvas'); c.width = Math.round(vw * dpr); c.height = Math.round(vh * dpr);
     const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-    await page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: c.width / vp1.width }) }).promise;
+    const { W, ox, oy } = fullBox(c);
+    await page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: W / vp1.width, offsetX: ox, offsetY: oy }) }).promise;
     pageCache.set(key, c);
     while (pageCache.size > 14) pageCache.delete(pageCache.keys().next().value);
     return c;
@@ -1229,8 +1254,8 @@ async function pageCanvas(n) {
   pageInflight.set(key, job);
   return job;
 }
-function drawStrokes(ctx, strokes, cssW, cssH) {
-  const fake = { w: cssW, h: cssH, dpr: ctx.canvas.width / cssW };
+function drawStrokes(ctx, strokes, cssW, cssH, dpr = ctx.canvas.width / cssW) {
+  const fake = { w: cssW, h: cssH, dpr };
   ctx.save(); ctx.globalCompositeOperation = 'multiply';
   for (const s of strokes) Ink.prototype.stroke.call(fake, ctx, s);
   ctx.restore();
@@ -1243,23 +1268,26 @@ async function pageSnapshot(n) {
   const base = await pageCanvas(n);
   const strokes = (await Store.get('ink', pageKey(n))) || [];
   if (!strokes.length && !pdfMarks(n).length) return base;
-  const c = document.createElement('canvas'); c.width = base.width; c.height = base.height;
-  const ctx = c.getContext('2d'); ctx.drawImage(base, 0, 0);
-  drawPageMarks(ctx, n);
-  if (strokes.length) drawStrokes(ctx, strokes, R.size.w, R.size.h);
-  return c;
+  return decorate(base, n, strokes);
 }
 function slotSnapshot(slot) {
   if (slot.page == null) return null;
-  const c = document.createElement('canvas'); c.width = slot.canvas.width; c.height = slot.canvas.height;
-  const ctx = c.getContext('2d'); ctx.drawImage(slot.canvas, 0, 0);
-  drawPageMarks(ctx, slot.page);
-  if (slot.ink.strokes.length) drawStrokes(ctx, slot.ink.strokes, R.size.w, R.size.h);
+  return decorate(slot.canvas, slot.page, slot.ink.strokes);
+}
+/** نسخة من صورة الصفحة الظاهرة مع التظليل وكتابة القلم (المحفوظة بإحداثيات الصفحة الكاملة). */
+function decorate(src, n, strokes) {
+  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+  const ctx = c.getContext('2d'); ctx.drawImage(src, 0, 0);
+  const box = fullBox(c);
+  ctx.save(); ctx.translate(box.ox, box.oy);
+  drawPageMarks(ctx, n, box.W, box.H);
+  if (strokes.length) drawStrokes(ctx, strokes, R.size.w, R.size.h, box.W / R.size.w);
+  ctx.restore();
   return c;
 }
 async function fillSlot(slot, n) {
   slot.page = n ?? null;
-  slot.node.classList.toggle('blank', !n);
+  slot.node.classList.toggle('blank', !n); slot.clip.classList.toggle('blank', !n);
   slot.tl.replaceChildren(); slot.hl.replaceChildren(); slot.hasText = false;
   if (!n) { slot.canvas.width = 1; slot.canvas.height = 1; slot.ink.load([]); slot.flag.hidden = true; return; }
   const src = await pageCanvas(n);
@@ -1321,8 +1349,7 @@ function renderPageMarks(slot) {
 }
 function refreshPageMarks() { R.slots.forEach(renderPageMarks); }
 /** يرسم تظليلات الصفحة على صورتها، لوجهَي الورقة أثناء التقليب. */
-function drawPageMarks(ctx, page) {
-  const W = ctx.canvas.width, H = ctx.canvas.height;
+function drawPageMarks(ctx, page, W = ctx.canvas.width, H = ctx.canvas.height) {
   ctx.save(); ctx.globalCompositeOperation = 'multiply';
   for (const m of pdfMarks(page)) for (const [x, y, w, h] of m.rects) {
     if (m.style === 'underline') { ctx.fillStyle = COLORS[m.color] || '#5AA2EC'; ctx.fillRect(x * W, (y + h) * H - 3, w * W, 3); }
@@ -1376,8 +1403,127 @@ function prefetch(start) {
   for (const p of [...spreadPages(start + st), ...spreadPages(start - st)]) pageCanvas(p).catch(() => {});
 }
 function setAnchor(start) {
+  if (start !== R.page && R.els?.scroller) R.els.scroller.scrollTop = 0; // الصفحة الجديدة تبدأ من أعلاها
   R.page = start; R.book.lastPage = start; saveBook(R.book, true);
   updateChrome();
+}
+
+// ---------- Page size: fit, margin crop, zoom ----------
+const ZOOM_MAX = 4;
+/** يكتشف الهوامش البيضاء المشتركة بين صفحات الكتاب، بعيّنة من صفحاته الداخلية. */
+async function detectCrop(pdf, pages) {
+  const picks = [...new Set(Array.from({ length: Math.min(8, pages) }, (_, i) => Math.max(1, Math.round(((i + 1) * pages) / (Math.min(8, pages) + 1)))))];
+  const boxes = [];
+  for (const n of picks) {
+    const cv = await renderToCanvas(pdf, n, 260).catch(() => null); if (!cv) continue;
+    const { width: W, height: H } = cv, px = cv.getContext('2d').getImageData(0, 0, W, H).data;
+    const rows = new Uint32Array(H), cols = new Uint32Array(W);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      if (px[i] + px[i + 1] + px[i + 2] < 600) { rows[y]++; cols[x]++; } // أغمق من الأبيض المائل
+    }
+    // سطر أو عمود فيه نقاط قليلة جدًا يُعدّ غبار مسح لا محتوى
+    const on = (arr, len) => arr.map((v) => (v > Math.max(1, len * 0.004) ? 1 : 0));
+    const R1 = on(rows, W), C1 = on(cols, H), first = (a) => a.indexOf(1), last = (a) => a.lastIndexOf(1);
+    if (first(R1) < 0 || first(C1) < 0) continue; // صفحة فارغة
+    const b = { l: first(C1) / W, r: 1 - (last(C1) + 1) / W, t: first(R1) / H, b: 1 - (last(R1) + 1) / H };
+    if (b.l + b.r < 0.03 && b.t + b.b < 0.03) continue; // صورة تملأ الصفحة لا تُحتسب
+    boxes.push(b);
+  }
+  if (!boxes.length) return { ...NO_CROP };
+  // الهامش المشترك: أصغر هامش في كل جهة، مع فسحة صغيرة حول النص
+  // ولا يُقص أكثر من ربع الصفحة من أي جهة، احتياطًا لكتاب عيّنته صفحات قليلة المحتوى
+  const pad = 0.018, m = (k) => Math.min(0.25, Math.max(0, Math.min(...boxes.map((b) => b[k])) - pad));
+  const c = { l: m('l'), r: m('r'), t: m('t'), b: m('b') };
+  if (c.l + c.r > 0.6 || c.t + c.b > 0.6) return { ...NO_CROP };
+  return Object.fromEntries(Object.entries(c).map(([k, v]) => [k, +v.toFixed(4)]));
+}
+async function setView(patch) {
+  const b = R.book; b.view = { ...(b.view || {}), ...patch }; saveBook(b);
+  if (b.view.trim && !b.crop) {
+    toast('جارٍ كشف الهوامش…');
+    b.crop = await detectCrop(R.pdf, b.pages); saveBook(b);
+    const total = b.crop.l + b.crop.r + b.crop.t + b.crop.b;
+    toast(total < 0.02 ? 'هوامش هذا الكتاب صغيرة أصلًا.' : 'قُصّت الهوامش البيضاء.');
+  }
+  await layout(); renderSizePop();
+}
+/** يغيّر التكبير مع إبقاء النقطة التي تحت الإصبعين (أو وسط الشاشة) في مكانها. */
+async function setZoom(z, cx, cy) {
+  const E = R.els; if (!E || R.turning) return;
+  z = Math.max(1, Math.min(ZOOM_MAX, Math.round(z * 100) / 100));
+  if (z === (R.zoom || 1)) return renderSizePop();
+  const sr = E.scroller.getBoundingClientRect();
+  cx ??= sr.left + sr.width / 2; cy ??= sr.top + sr.height / 2;
+  const br = E.bookEl.getBoundingClientRect(), fx = (cx - br.left) / br.width, fy = (cy - br.top) / br.height;
+  R.zoom = z;
+  await layout();
+  const nb = E.bookEl.getBoundingClientRect();
+  E.scroller.scrollLeft += nb.left + fx * nb.width - cx;
+  E.scroller.scrollTop += nb.top + fy * nb.height - cy;
+  renderSizePop();
+}
+let sizePop = null;
+function toggleSizePop() {
+  if (sizePop) { sizePop.remove(); sizePop = null; R.els.sizeBtn.setAttribute('aria-pressed', 'false'); return; }
+  sizePop = el('div', { class: 'size-pop', role: 'dialog', 'aria-label': 'حجم الصفحة' });
+  readerEl.append(sizePop); R.els.sizeBtn.setAttribute('aria-pressed', 'true');
+  renderSizePop();
+}
+function renderSizePop() {
+  if (!sizePop || !R.book) return;
+  const v = R.book.view || {}, z = R.zoom || 1;
+  const seg = (items, cur, fn) => el('div', { class: 'seg' }, ...items.map(([k, l]) => el('button', { 'aria-pressed': String(cur === k), onclick: () => fn(k) }, l)));
+  sizePop.replaceChildren(
+    el('b', {}, 'حجم الصفحة'),
+    seg([['page', 'ملاءمة الصفحة'], ['width', 'ملاءمة العرض']], v.fit || 'page', (k) => setView({ fit: k })),
+    el('button', { class: 'toggle-chip sp-trim', 'aria-pressed': String(!!v.trim), onclick: () => setView({ trim: !v.trim }) }, 'قص الهوامش البيضاء'),
+    v.trim ? el('button', { class: 'btn ghost sp-redetect', onclick: async () => { R.book.crop = null; await setView({ trim: true }); } }, 'إعادة كشف الهوامش') : null,
+    el('div', { class: 'sp-zoom' },
+      el('button', { class: 'icon-btn', 'aria-label': 'تصغير', disabled: z <= 1, onclick: () => setZoom(z <= 1.25 ? 1 : z / 1.25) }, '−'),
+      el('span', { class: 'num', dir: 'ltr' }, `${Math.round(z * 100)}%`),
+      el('button', { class: 'icon-btn', 'aria-label': 'تكبير', disabled: z >= ZOOM_MAX, onclick: () => setZoom(z * 1.25) }, '+'),
+      el('button', { class: 'btn ghost', disabled: z === 1, onclick: () => setZoom(1) }, 'إعادة')),
+    el('small', { class: 'muted' }, 'يمكنك التكبير والتصغير بإصبعين على الصفحة أيضًا.'));
+}
+document.addEventListener('pointerdown', (e) => {
+  if (sizePop && !sizePop.contains(e.target) && !R.els?.sizeBtn.contains(e.target)) { sizePop.remove(); sizePop = null; R.els?.sizeBtn.setAttribute('aria-pressed', 'false'); }
+}, true);
+/** التكبير بإصبعين (وعلى الحاسوب: ctrl مع عجلة الفأرة أو لوحة اللمس). */
+function setupPinch(E) {
+  let pinch = null;
+  const dist2 = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = (t) => [(t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2];
+  E.scroller.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 2 || R.turning) return;
+    const br = E.bookEl.getBoundingClientRect(), [mx, my] = mid(e.touches);
+    pinch = { d0: dist2(e.touches), s: 1, mx, my };
+    E.bookEl.style.transformOrigin = `${mx - br.left}px ${my - br.top}px`;
+    E.stage.dispatchEvent(new CustomEvent('pinchstart'));
+  }, { passive: true });
+  E.scroller.addEventListener('touchmove', (e) => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const z = R.zoom || 1;
+    pinch.s = Math.max(1 / z, Math.min(ZOOM_MAX / z, dist2(e.touches) / pinch.d0));
+    E.bookEl.style.transform = `scale(${pinch.s})`;
+  }, { passive: false });
+  const end = (e) => {
+    if (!pinch || e.touches.length >= 2) return;
+    const p = pinch; pinch = null;
+    E.bookEl.style.transform = ''; E.bookEl.style.transformOrigin = '';
+    if (Math.abs(p.s - 1) > 0.04) setZoom((R.zoom || 1) * p.s, p.mx, p.my);
+  };
+  E.scroller.addEventListener('touchend', end); E.scroller.addEventListener('touchcancel', end);
+  // Safari يكبّر الصفحة كلها بالإصبعين ما لم يُمنع
+  E.scroller.addEventListener('gesturestart', (e) => e.preventDefault());
+  let wheelZ = null, wheelT;
+  E.scroller.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    wheelZ = (wheelZ ?? (R.zoom || 1)) * Math.exp(-e.deltaY / 200);
+    clearTimeout(wheelT); wheelT = setTimeout(() => { setZoom(wheelZ, e.clientX, e.clientY); wheelZ = null; }, 120);
+  }, { passive: false });
 }
 let seenTimer;
 function afterPageChange() {
@@ -1516,7 +1662,7 @@ async function beginTurn(dir, opts = {}) {
   const from = R.page, to = from + dir * stepSize();
   if (to < 1 || to > R.book.pages) return null;
   R.turning = true;
-  const { w, h, cols } = R.size;
+  const { vw: w, vh: h, cols } = R.size; // الورقة المقلوبة بحجمها الظاهر
   let leafOpts, underSlot, underPage, finishSlot, finishPage, restorePage, reverse = false;
   if (cols === 2) {
     // إلى الأمام تنقلب الصفحة الثانية فوق الكعب، وإلى الخلف تنقلب الأولى
@@ -1575,14 +1721,24 @@ async function beginTurn(dir, opts = {}) {
 /** سحب الصفحة بالإصبع: الورقة تتبع الإصبع، وتكتمل أو ترجع حسب المسافة والسرعة. */
 function setupDrag(E) {
   let st = null, suppressClick = false;
+  const fingers = new Set();
   E.stage.addEventListener('click', (e) => { if (suppressClick) { e.stopPropagation(); e.preventDefault(); suppressClick = false; } }, true);
+  const lift = (e) => fingers.delete(e.pointerId);
+  E.stage.addEventListener('pointerup', lift, true); E.stage.addEventListener('pointercancel', lift, true);
   E.stage.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch') fingers.add(e.pointerId);
+    // إصبعان: تكبير، لا تقليب
+    if (fingers.size > 1) {
+      if (st) { const s = st; st = null; E.stage.classList.remove('dragging'); s.pending?.then((t) => t?.finish(false)); }
+      return;
+    }
     if (R.turning || e.button > 0 || e.pointerType === 'pen') return;
     if (R.pen && !(e.pointerType === 'touch' && S.settings.penOnly)) return;
     if (e.target.closest('.pen-bar, .thumbs')) return;
     const sel = getSelection();
-    // سحب الفأرة فوق النص، أو سحب مقابض التحديد، يحدّد النص ولا يقلب الصفحة
-    const noDrag = (e.pointerType === 'mouse' && !!e.target.closest('.textLayer span')) || (sel && !sel.isCollapsed && !!sel.anchorNode && E.bookEl.contains(sel.anchorNode));
+    // سحب الفأرة فوق النص، أو سحب مقابض التحديد، يحدّد النص ولا يقلب الصفحة؛
+    // وحين تكون الصفحة أعرض من الشاشة يحرّكها الإصبع بدل أن يقلبها
+    const noDrag = (e.pointerType === 'mouse' && !!e.target.closest('.textLayer span')) || (sel && !sel.isCollapsed && !!sel.anchorNode && E.bookEl.contains(sel.anchorNode)) || E.stage.classList.contains('wide');
     st = { x: e.clientX, y: e.clientY, id: e.pointerId, dir: 0, p: 0, vx: 0, lastX: e.clientX, lastT: performance.now(), t0: performance.now(), noDrag };
   });
   E.stage.addEventListener('pointermove', async (e) => {
@@ -1603,7 +1759,7 @@ function setupDrag(E) {
     if (st.pending && !st.turn) { st.turn = await st.pending; if (!st) return; }
     if (st?.turn) {
       if (st.turn.drag) st.p = st.turn.drag(dx, dy);
-      else { st.p = Math.max(0, Math.min(1, (dx * st.sx) / (R.size.w * R.size.cols))); st.turn.set(st.p); }
+      else { st.p = Math.max(0, Math.min(1, (dx * st.sx) / (R.size.vw * R.size.cols))); st.turn.set(st.p); }
     }
   });
   const end = async (e) => {
@@ -1620,7 +1776,7 @@ function setupDrag(E) {
     }
     const dx = e.clientX - s.x, dy = e.clientY - s.y;
     if (s.dir && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) goto(R.page + s.dir * stepSize(), s.dir);
-    else if (!s.dir && Math.hypot(dx, dy) < 10 && performance.now() - s.t0 < 450) handleTap(e);
+    else if (!s.dir && e.type === 'pointerup' && Math.hypot(dx, dy) < 10 && performance.now() - s.t0 < 450) handleTap(e);
   };
   E.stage.addEventListener('pointerup', end);
   E.stage.addEventListener('pointercancel', end);
@@ -1676,6 +1832,7 @@ function setPen(on) {
   E.penBtn.setAttribute('aria-pressed', String(on));
   E.penBar.hidden = !on; E.tapNext.hidden = on; E.tapPrev.hidden = on;
   E.stage.classList.toggle('pen-on', on);
+  E.stage.classList.toggle('pen-only', !!S.settings.penOnly);
   R.slots.forEach((s) => s.ink.setEnabled(on));
   layout();
   if (on) setThumbs(false);
