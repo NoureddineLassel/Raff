@@ -62,7 +62,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v20'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v21'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -843,7 +843,25 @@ const SHELF_THEMES = {
   classic: { name: 'مكتبة خشبية تقليدية', back: '#2E1B10', hi: '#B07A48', board: '#7A4A26', lo: '#2A170C', ink: '#F4E7D2', grain: false, classic: true },
   glass: { name: 'زجاج', back: '#E3EEEE', hi: 'rgba(255,255,255,.95)', board: 'rgba(186,212,211,.9)', lo: 'rgba(110,150,150,.75)', ink: '#1C2A28', grain: false },
 };
-const SKINS = [['auto', 'تلقائي'], ['light', 'فاتح'], ['sepia', 'ورقي'], ['dark', 'داكن']];
+// ثيمات التطبيق كله: كل ثيم مجموعة ألوان كاملة (الخلفية، الأسطح، النص، الخطوط، اللون المميّز…)
+const T = (paper, surface, surface2, ink, muted, line, accent, accentSoft, onAccent, danger, page, chart2) =>
+  ({ paper, surface, 'surface-2': surface2, ink, muted, line, accent, 'accent-soft': accentSoft, 'on-accent': onAccent, danger, page, 'chart-1': accent, 'chart-2': chart2 });
+const THEMES = [
+  { key: 'light', name: 'نعناع', tone: 'light', c: T('#ECEDE8', '#F9F9F6', '#F1F2EE', '#1C2220', '#5D6662', '#D3D6CF', '#1E6A64', '#D6E8E5', '#FFFFFF', '#B3362F', '#FFFFFF', '#A3C4BF') },
+  { key: 'mist', name: 'ضباب', tone: 'light', c: T('#E8ECF1', '#F7F9FB', '#EEF2F6', '#1B2430', '#5A6574', '#D2D9E2', '#3A62A7', '#DCE5F4', '#FFFFFF', '#B3362F', '#FFFFFF', '#AFC3E3') },
+  { key: 'sage', name: 'مريمية', tone: 'light', c: T('#E6EBE2', '#F6F8F3', '#EDF1E8', '#1F2A1F', '#5D6A5B', '#CFD8C9', '#44692F', '#DCE7D2', '#FFFFFF', '#A9452F', '#FFFFFF', '#B5CDA6') },
+  { key: 'sand', name: 'رمال', tone: 'light', c: T('#F0E8DE', '#FBF7F2', '#F3EBE1', '#2E2420', '#73645A', '#E0D3C4', '#9C452E', '#F3DDD0', '#FFFFFF', '#A33A2C', '#FFFDF9', '#E3B8A6') },
+  { key: 'lavender', name: 'خزامى', tone: 'light', c: T('#EBE8F2', '#F9F8FC', '#F0EDF6', '#231F2E', '#625C72', '#D8D3E4', '#6A4DB0', '#E4DCF5', '#FFFFFF', '#B3362F', '#FFFFFF', '#C6B6E8') },
+  { key: 'sepia', name: 'ورقي', tone: 'light', c: T('#EFE5D0', '#F8F1E2', '#EADFC7', '#3A2E22', '#75654E', '#D9C9AA', '#8A5A2B', '#EBD8BB', '#FFFFFF', '#A63A2C', '#FBF5E8', '#D8BD94') },
+  { key: 'dark', name: 'داكن', tone: 'dark', c: T('#121514', '#1A1F1D', '#222826', '#E5E8E3', '#9AA39E', '#2E3532', '#5EB6AC', '#1F3A37', '#0D1312', '#E0675F', '#F4F2EC', '#2F5450') },
+  { key: 'midnight', name: 'منتصف الليل', tone: 'dark', c: T('#0E1320', '#161C2B', '#1D2436', '#E3E8F2', '#98A2B6', '#2A3247', '#7DA8FF', '#1E2B48', '#0B1020', '#F07A70', '#F4F2EC', '#33466E') },
+  { key: 'forest', name: 'غابة', tone: 'dark', c: T('#0E1612', '#15201A', '#1B2921', '#E1EBE4', '#93A69A', '#26362D', '#6FCF97', '#1C3326', '#08130D', '#EE7B6E', '#F4F2EC', '#2E5440') },
+  { key: 'graphite', name: 'فحم', tone: 'dark', c: T('#0B0B0C', '#151517', '#1D1D20', '#ECECEC', '#9D9DA4', '#2A2A2E', '#E6AA58', '#33281A', '#1A1206', '#F07A70', '#F2EFE8', '#5A4628') },
+];
+const SKINS = [['auto', 'تلقائي'], ...THEMES.map((t) => [t.key, t.name])];
+const themeOf = (k) => THEMES.find((t) => t.key === k);
+const darkMQ = matchMedia('(prefers-color-scheme: dark)');
+darkMQ.addEventListener?.('change', () => { if (!themeOf(S.settings.skin)) applySkin(); });
 function shelfVars(key) {
   const t = SHELF_THEMES[key] || SHELF_THEMES.walnut;
   return `--sh-back:${t.back};--sh-hi:${t.hi};--sh-board:${t.board};--sh-lo:${t.lo};--sh-ink:${t.ink};--sh-grain:${t.grain ? 'var(--grain)' : 'none'}`;
@@ -877,9 +895,26 @@ function woodTexture() {
   root.setProperty('--wood-v', `url(${rot.toDataURL('image/jpeg', 0.82)})`);
 }
 function applySkin() {
-  const k = S.settings.skin;
-  if (k && k !== 'auto') document.documentElement.dataset.skin = k;
-  else delete document.documentElement.dataset.skin;
+  // «تلقائي» يتبع الوضع الفاتح أو الداكن في النظام
+  const t = themeOf(S.settings.skin) || themeOf(darkMQ.matches ? 'dark' : 'light');
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(t.c)) root.style.setProperty('--' + k, v);
+  const dark = t.tone === 'dark';
+  root.style.setProperty('--shadow', dark ? '0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35)' : '0 1px 2px rgba(20,28,25,.08), 0 8px 24px rgba(20,28,25,.10)');
+  root.style.colorScheme = dark ? 'dark' : 'light';
+  root.dataset.skin = t.key; root.dataset.tone = t.tone;
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', t.c.paper));
+}
+/** بطاقات معاينة الثيمات: كل بطاقة نموذج مصغّر للتطبيق بألوان الثيم. */
+function themePicker(onPick) {
+  const cur = S.settings.skin || 'auto';
+  const card = (key, name, c, c2) => el('button', { class: 'theme-card', 'aria-pressed': String(cur === key), onclick: () => { S.settings.skin = key; saveSettings(); applySkin(); onPick?.(); } },
+    el('span', { class: 'tc-prev', style: `--p:${c.paper};--s:${c.surface};--i:${c.ink};--a:${c.accent};--l:${c.line};--m:${c.muted}` + (c2 ? `;--p2:${c2.paper};--s2:${c2.surface};--a2:${c2.accent}` : '') },
+      el('i', { class: 'tc-rail' }), el('i', { class: 'tc-card' }, el('b'), el('b'), el('em')), c2 ? el('i', { class: 'tc-half' }) : null),
+    el('span', { class: 'tc-name' }, name));
+  return el('div', { class: 'theme-cards' },
+    card('auto', 'تلقائي', themeOf('light').c, themeOf('dark').c),
+    ...THEMES.map((t) => card(t.key, t.name, t.c)));
 }
 const isInstalled = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const currentShelf = () => S.shelves.find((x) => x.id === S.settings.shelf) || null;
@@ -1009,8 +1044,7 @@ function customizePanel(shelf, themeKey) {
     el('div', { class: 'cz-row' }, el('b', {}, shelf ? 'شكل هذا الرف' : 'شكل رف «كل الكتب»'),
       el('div', { class: 'theme-grid' }, ...Object.entries(SHELF_THEMES).map(([k, t]) => el('button', { class: 'theme-opt', 'aria-pressed': String(themeKey === k), onclick: () => setTheme(k) },
         el('span', { class: 'theme-prev' + shelfCls(k), style: shelfVars(k) }, el('i'), el('i'), el('i')), t.name)))),
-    el('div', { class: 'cz-row' }, el('b', {}, 'مظهر التطبيق'),
-      el('div', { class: 'seg' }, ...SKINS.map(([k, l]) => el('button', { 'aria-pressed': String(S.settings.skin === k), onclick: () => { S.settings.skin = k; saveSettings(); applySkin(); renderLibrary(); } }, l)))));
+    el('div', { class: 'cz-row' }, el('b', {}, 'ثيم التطبيق'), themePicker(renderLibrary)));
   if (shelf) {
     let armed = false;
     const del = el('button', { class: 'btn ghost danger', onclick: () => {
@@ -2957,8 +2991,8 @@ function renderSettings() {
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'مكان الحفظ'),
         el('span', {}, Cloud.ok ? 'حسابك في Claude. تبقى مكتبتك بعد إغلاق التطبيق وتظهر على أجهزتك الأخرى. ملفات PDF حتى 20 م.ب تُرفع إلى حسابك، والأكبر تبقى على الجهاز الذي أُضيفت منه.'
           : 'على هذا الـ iPad نفسه، وتبقى بعد إغلاق التطبيق. لا تحذف التطبيق من الشاشة الرئيسية لأن حذفه يحذف مكتبته، وصدّر نسخة احتياطية من حين لآخر.')), usage),
-      el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'مظهر التطبيق'), el('span', {}, 'شكل الرفوف نفسها تختاره من زر «تخصيص» في المكتبة.')),
-        seg(SKINS, st.skin, (k) => { st.skin = k; applySkin(); })),
+      el('div', { class: 'set-row theme-row' }, el('div', { class: 'l' }, el('b', {}, 'ثيم التطبيق'), el('span', {}, 'ألوان التطبيق كله. شكل الرفوف نفسها تختاره من زر «تخصيص» في المكتبة.'),
+        themePicker(renderSettings))),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'عرض الصفحات'), el('span', {}, 'التلقائي يعرض صفحتين متقابلتين حين يكون الـ iPad أفقيًا، وصفحة واحدة حين يكون عموديًا.')),
         seg([['auto', 'تلقائي'], ['single', 'صفحة واحدة'], ['double', 'صفحتان']], st.pageMode, (k) => { st.pageMode = k; })),
       el('div', { class: 'set-row' }, el('div', { class: 'l' }, el('b', {}, 'قلب الصفحة'), el('span', {}, 'الواقعي ينحني كالورق ويتبع إصبعك حين تسحب طرف الصفحة.')),
