@@ -62,7 +62,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v21'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v22'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -2591,10 +2591,43 @@ document.addEventListener('selectionchange', debounce(() => {
 }, 220));
 function place(node, rect, gap = 12) {
   document.body.append(node);
-  const w = node.offsetWidth, h = node.offsetHeight, vw = innerWidth, vh = innerHeight;
-  let top = rect.bottom + gap; if (top + h > vh - 12) top = Math.max(12, rect.top - h - gap);
-  let left = rect.left + rect.width / 2 - w / 2; left = Math.max(12, Math.min(vw - w - 12, left));
-  node.style.top = top + 'px'; node.style.left = left + 'px';
+  const fit = () => {
+    const w = node.offsetWidth, h = node.offsetHeight, vw = innerWidth, vh = innerHeight;
+    if (node.dataset.moved) { // نقلها القارئ: تبقى حيث وضعها، داخل الشاشة فقط
+      const r = node.getBoundingClientRect();
+      node.style.left = Math.max(8, Math.min(vw - w - 8, r.left)) + 'px'; node.style.top = Math.max(8, Math.min(vh - h - 8, r.top)) + 'px';
+      return;
+    }
+    // تحت النص المحدد إن اتسعت الشاشة، وإلا فوقه، وإلا أقرب موضع يُظهرها كلها
+    let top = rect.bottom + gap;
+    if (top + h > vh - 12) top = rect.top - h - gap >= 12 ? rect.top - h - gap : Math.max(12, vh - h - 12);
+    const left = Math.max(12, Math.min(vw - w - 12, rect.left + rect.width / 2 - w / 2));
+    node.style.top = top + 'px'; node.style.left = left + 'px';
+  };
+  fit();
+  // الترجمة تُكتب تدريجيًا فتطول النافذة: يُعاد ضبط موضعها كلما تغيّر حجمها
+  const ro = new ResizeObserver(() => { if (!node.isConnected) return ro.disconnect(); fit(); });
+  ro.observe(node);
+  const head = node.querySelector('h3');
+  if (head) popDrag(node, head);
+}
+/** سحب النافذة من رأسها إلى أي مكان في الشاشة. */
+function popDrag(node, head) {
+  head.classList.add('pop-grip');
+  head.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button, a, input, select') || e.button > 0) return;
+    e.preventDefault();
+    const r = node.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY;
+    try { head.setPointerCapture(e.pointerId); } catch {}
+    node.classList.add('moving');
+    const mv = (ev) => {
+      node.dataset.moved = '1';
+      node.style.left = Math.max(8, Math.min(innerWidth - r.width - 8, r.left + ev.clientX - x0)) + 'px';
+      node.style.top = Math.max(8, Math.min(innerHeight - r.height - 8, r.top + ev.clientY - y0)) + 'px';
+    };
+    const up = () => { node.classList.remove('moving'); head.removeEventListener('pointermove', mv); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up); };
+    head.addEventListener('pointermove', mv); head.addEventListener('pointerup', up); head.addEventListener('pointercancel', up);
+  });
 }
 function showSelBar(rect, mark) {
   hideSelBar();
