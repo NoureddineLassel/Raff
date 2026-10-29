@@ -62,7 +62,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v18'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v19'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -746,22 +746,30 @@ function showView(v) {
   ({ library: renderLibrary, notes: renderNotes, stats: renderStats, settings: renderSettings })[v]();
   renderRailShelves();
 }
+const GLASS = ['148 160 156', '88 160 210', '96 178 140', '226 150 90', '200 110 160', '150 120 210', '214 180 70', '80 170 170', '220 110 110', '120 140 200'];
 /** الرفوف في الشريط الجانبي تحت زر المكتبة. */
 function renderRailShelves() {
   const box = $('#railShelves'); if (!box) return;
   box.hidden = S.view !== 'library' || !(S.settings.railShelves ?? true);
   $('.rail-btn[data-view="library"]').setAttribute('aria-expanded', String(!box.hidden));
   if (box.hidden) return;
-  const item = (id, name, n, theme) => el('button', { class: 'rail-shelf', role: 'tab', 'aria-selected': String(S.settings.shelf === id), title: name, onclick: () => selectShelf(id) },
-    el('i', { class: 'sw' + shelfCls(theme), style: shelfVars(theme) }), el('span', { class: 'rs-name' }, name), el('span', { class: 'rs-n num' }, fmt(n)));
-  const kids = [item('all', 'كل الكتب', S.books.length, S.settings.allTheme), ...S.shelves.map((x) => item(x.id, x.name, shelfBooks(x.id).length, x.theme))];
+  // أزرار نصية مستطيلة بألوان زجاجية؛ يأخذ كل رف لونًا أقل استعمالًا عند أول ظهور ويحتفظ به
+  for (const x of S.shelves) if (x.glass == null) {
+    const used = S.shelves.map((y) => y.glass).filter((g) => g != null);
+    x.glass = 1 + [...Array(GLASS.length - 1).keys()].sort((a, b) => used.filter((g) => g === a + 1).length - used.filter((g) => g === b + 1).length)[0];
+    Store.put('shelves', x.id, x);
+  }
+  const tint = (id) => (id === 'all' ? 0 : S.shelves.find((x) => x.id === id)?.glass || 1);
+  const item = (id, name, n) => el('button', { class: 'rail-shelf', role: 'tab', 'aria-selected': String(S.settings.shelf === id), title: `${name} (${bookCount(n)})`, style: `--g:${GLASS[tint(id)]}`, onclick: () => selectShelf(id) },
+    el('span', { class: 'rs-name' }, name));
+  const kids = [item('all', 'كل الكتب', S.books.length), ...S.shelves.map((x) => item(x.id, x.name, shelfBooks(x.id).length))];
   if (addingShelf) {
     const inp = el('input', { class: 'rs-input', placeholder: 'اسم الرف', 'aria-label': 'اسم الرف الجديد', enterkeyhint: 'done' });
     const done = () => { const v = inp.value.trim(); addingShelf = false; if (v) addShelf(v); else renderRailShelves(); };
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(); if (e.key === 'Escape') { addingShelf = false; renderRailShelves(); } });
     inp.addEventListener('blur', () => setTimeout(() => { if (addingShelf) done(); }, 150));
     kids.push(inp); setTimeout(() => inp.focus(), 0);
-  } else kids.push(el('button', { class: 'rail-shelf add', onclick: () => { addingShelf = true; renderRailShelves(); } }, icon('plus'), el('span', { class: 'rs-name' }, 'رف جديد')));
+  } else kids.push(el('button', { class: 'rail-shelf add', onclick: () => { addingShelf = true; renderRailShelves(); } }, el('span', { class: 'rs-name' }, '+ رف جديد')));
   box.replaceChildren(...kids);
 }
 bus.addEventListener('change', debounce((e) => {
