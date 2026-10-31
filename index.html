@@ -406,6 +406,12 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 .tr-ext { font-size: 13px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; padding: 6px 2px; }
 .tr-activate { font-size: 13px; line-height: 1.6; background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; margin-top: 10px; display: grid; gap: 8px; }
 .tr-activate[hidden] { display: none; }
+.tr-save { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 10px; border-radius: 12px; background: var(--surface-2); font-size: 13.5px; }
+.tr-save[hidden] { display: none; }
+.tr-save .dot { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--line); padding: 0; }
+.tr-save .dot:hover, .tr-save .dot:focus-visible { box-shadow: 0 0 0 2px var(--ink); }
+/* الترجمة المحفوظة تحت النص الأصلي */
+.dr-trans, .anno-trans, .note-item small.anno-trans { display: block; font-size: 14px; line-height: 1.6; color: var(--ink); white-space: normal; padding-inline-start: 10px; border-inline-start: 2px solid var(--accent); opacity: .9; }
 .tr-activate .row { gap: 8px; flex-wrap: nowrap; }
 .tr-activate .input { min-height: 38px; padding: 6px 10px; }
 a.btn { text-decoration: none; color: var(--ink); }

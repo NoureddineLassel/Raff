@@ -62,7 +62,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v22'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v23'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1260,10 +1260,11 @@ function buildReader() {
   E.thBtn = el('button', { class: 'icon-btn', title: 'الصفحات', 'aria-label': 'الصفحات', onclick: () => setThumbs(!R.thumbs) }, icon('thumbs'));
   E.dirBtn = el('button', { class: 'icon-btn dir-btn', title: 'اتجاه التصفح', 'aria-label': 'اتجاه التصفح', onclick: toggleDir }, el('span', { class: 'dir-label' }));
   E.drawerBtn = el('button', { class: 'icon-btn', title: 'العلامات والملاحظات', 'aria-label': 'العلامات والملاحظات', onclick: () => setDrawer(!R.drawer) }, icon('list'));
+  E.autoTrBtn = el('button', { class: 'icon-btn', title: 'الترجمة الآلية للنص المحدد', 'aria-label': 'الترجمة الآلية', 'aria-pressed': String(!!S.settings.autoTranslate), onclick: () => setAutoTranslate(!S.settings.autoTranslate) }, icon('translate'));
   E.sizeBtn = el('button', { class: 'icon-btn', title: 'حجم الصفحة', 'aria-label': 'حجم الصفحة', 'aria-haspopup': 'dialog', onclick: () => toggleSizePop() }, icon('zoom'));
   const top = el('div', { class: 'r-top' },
     el('button', { class: 'icon-btn', 'aria-label': 'العودة إلى المكتبة', title: 'المكتبة', onclick: closeReader }, icon('back')),
-    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo, E.dirBtn, E.sizeBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
+    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo, E.dirBtn, E.autoTrBtn, E.sizeBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
   E.bookEl = el('div', { class: 'book-view' });
   E.tapNext = el('button', { class: 'tap-zone next', 'aria-label': 'الصفحة التالية', onclick: () => goto(R.page + stepSize(), 1) });
   E.tapPrev = el('button', { class: 'tap-zone prev', 'aria-label': 'الصفحة السابقة', onclick: () => goto(R.page - stepSize(), -1) });
@@ -2118,12 +2119,12 @@ function matchesFilter(it) {
   const { type, colors } = R.filt;
   if (colors.size && !itemColors(it).some((c) => colors.has(c))) return false;
   if (type === 'all') return true;
-  if (type === 'note') return !!it.g?.note;
+  if (type === 'note') return !!(it.g?.note || it.g?.trans);
   return it.type === type;
 }
 function renderDrawer() {
   const E = R.els, all = drawerItems();
-  const count = (t) => all.filter((it) => (t === 'all' ? true : t === 'note' ? !!it.g?.note : it.type === t)).length;
+  const count = (t) => all.filter((it) => (t === 'all' ? true : t === 'note' ? !!(it.g?.note || it.g?.trans) : it.type === t)).length;
   const list = all.filter(matchesFilter);
   const spread = spreadPages(R.page);
   const chips = el('div', { class: 'dr-chips', role: 'group', 'aria-label': 'تصفية حسب النوع' },
@@ -2201,7 +2202,7 @@ async function deleteItems(items) {
   if (groups.size) {
     const hit = S.marks.filter((m) => groups.has(m.group));
     if (onlyNotes) {
-      for (const m of hit) { undo.notes.push([m, m.note]); m.note = ''; Store.put('marks', m.id, m); }
+      for (const m of hit) { undo.notes.push([m, m.note, m.trans]); m.note = ''; delete m.trans; Store.put('marks', m.id, m); }
     } else {
       undo.marks = hit;
       S.marks = S.marks.filter((m) => !groups.has(m.group));
@@ -2221,7 +2222,7 @@ async function deleteItems(items) {
   toast(`حُذف ${n === 1 ? 'عنصر واحد' : n === 2 ? 'عنصران' : `${fmt(n)} عناصر`}.`, { label: 'تراجع', fn: () => {
     b.bookmarks = undo.bookmarks; saveBook(b);
     for (const m of undo.marks) { S.marks.push(m); Store.put('marks', m.id, m); refreshPara(m.page, m.para); }
-    for (const [m, note] of undo.notes) { m.note = note; Store.put('marks', m.id, m); refreshPara(m.page, m.para); }
+    for (const [m, note, trans] of undo.notes) { m.note = note; if (trans) m.trans = trans; Store.put('marks', m.id, m); refreshPara(m.page, m.para); }
     for (const [p, strokes] of undo.ink) setInkStrokes(p, strokes);
     afterDelete();
   } });
@@ -2247,6 +2248,7 @@ function drawerItem(it, current) {
     body = el('div', { class: 'dr-body' },
       el('q', { dir: isArabic(g.text) ? 'rtl' : 'ltr' }, g.text.length > 160 ? g.text.slice(0, 160) + '…' : g.text),
       g.note ? el('span', { class: 'dr-note' }, '✎ ' + g.note) : null,
+      g.trans ? el('span', { class: 'dr-trans', dir: g.trans.to === 'ar' ? 'rtl' : 'ltr', lang: g.trans.to }, g.trans.text.length > 220 ? g.trans.text.slice(0, 220) + '…' : g.trans.text) : null,
       meta(`${it.type === 'underline' ? 'تسطير' : 'تظليل'} ${COLOR_NAMES[g.color] || ''}${g.rects ? ' · على الصفحة' : ''}`));
   }
   const picking = R.picking, key = itemKey(it);
@@ -2581,13 +2583,13 @@ document.addEventListener('selectionchange', debounce(() => {
     const rects = selectionRects(range, slot.node.getBoundingClientRect());
     if (!rects.length) return;
     curSel = { source: 'pdf', page: slot.page, rects, text, rect: range.getBoundingClientRect() };
-    showSelBar(curSel.rect, null);
+    showSelBar(curSel.rect, null); maybeAutoTranslate();
     return;
   }
   if (!root || !root.contains(range.commonAncestorContainer)) return;
   const parts = rangeParts(range); if (!parts.length) return;
   curSel = { parts, text: sel.toString().trim(), rect: range.getBoundingClientRect() };
-  showSelBar(curSel.rect, null);
+  showSelBar(curSel.rect, null); maybeAutoTranslate();
 }, 220));
 function place(node, rect, gap = 12) {
   document.body.append(node);
@@ -2639,7 +2641,7 @@ function showSelBar(rect, mark) {
     onclick: () => mark ? updateGroup(mark.group, { color: k, style: 'highlight' }) : addMarks('highlight', k) })));
   b.append(el('span', { class: 'sep' }),
     el('button', { onclick: () => mark ? updateGroup(mark.group, { style: mark.style === 'underline' ? 'highlight' : 'underline' }) : addMarks('underline', S.settings.lastColor === 'yellow' ? 'blue' : S.settings.lastColor) }, icon('underline'), mark?.style === 'underline' ? 'تظليل' : 'تسطير'),
-    el('button', { onclick: () => translatePop(text, rect) }, icon('translate'), 'ترجمة'),
+    el('button', { onclick: () => translatePop(text, rect, { sel: mark ? null : curSel, mark }) }, icon('translate'), 'ترجمة'),
     el('button', { onclick: () => notePop(mark ? mark.group : addMarks('highlight', 'yellow', true), rect) }, icon('note'), 'ملاحظة'),
     el('button', { onclick: () => copyText(text) }, icon('copy'), 'نسخ'),
     mark ? el('button', { onclick: () => removeGroup(mark.group) }, icon('trash'), 'إزالة') : null);
@@ -2745,7 +2747,11 @@ async function translateClaudeApi(text, to, onText, signal) {
     throw e;
   }
 }
-async function translatePop(text, rect) {
+/**
+ * نافذة الترجمة. الأولوية: المساعد الأكاديمي (Claude) ← DeepL ← Google ← MyMemory.
+ * opts.sel: التحديد الذي تُرجم (لحفظ الترجمة ملاحظةً عليه)، opts.mark: تظليل موجود تُضاف إليه الترجمة.
+ */
+async function translatePop(text, rect, opts = {}) {
   hideSelBar();
   const to = isArabic(text) ? S.settings.translateTo : 'ar';
   const from = isArabic(text) ? 'ar' : 'en';
@@ -2762,52 +2768,107 @@ async function translatePop(text, rect) {
     el('div', {}, 'لتظهر هنا ترجمة المساعد الأكاديمي المتخصصة، الصق مفتاح Claude API مرة واحدة (من console.anthropic.com). يُحفظ على هذا الجهاز فقط.'),
     el('div', { class: 'row' }, keyIn, el('button', { class: 'btn primary', onclick: () => {
       const v = keyIn.value.trim(); if (!v) return keyIn.focus();
-      S.settings.claudeKey = v; saveSettings(); ctrl.abort(); hideSelBar(); translatePop(text, rect);
+      S.settings.claudeKey = v; saveSettings(); ctrl.abort(); hideSelBar(); translatePop(text, rect, opts);
     } }, 'تفعيل')));
+  // حفظ الترجمة ملاحظةً: يُظلَّل النص باللون المختار ويُحفظ معه النصان الأصلي والمترجم
+  let result = null, engine = '';
+  const canSave = !!(opts.sel || opts.mark);
+  const save = el('div', { class: 'tr-save', hidden: true },
+    el('span', {}, 'حفظ كملاحظة:'),
+    ...Object.entries(COLORS).map(([k, c]) => el('button', { class: 'dot', style: `background:${c}`, 'aria-label': `حفظ الترجمة ملاحظةً بلون ${COLOR_NAMES[k] || k}`, title: COLOR_NAMES[k] || k,
+      onclick: () => saveTranslation(k) })));
+  const saveTranslation = (color) => {
+    if (!result) return;
+    const trans = { text: result, to, engine, at: Date.now() };
+    let group = opts.mark?.group;
+    if (group) updateGroup(group, { color, style: 'highlight' });
+    else { curSel = opts.sel; group = addMarks('highlight', color, true); }
+    if (!group) return toast('تعذّر الحفظ: حدّد النص من جديد.');
+    for (const m of S.marks.filter((x) => x.group === group)) { m.trans = trans; Store.put('marks', m.id, m); refreshPara(m.page, m.para); }
+    refreshPageMarks(); changed('marks'); if (R.drawer) renderDrawer();
+    ctrl.abort(); hideSelBar(); getSelection().removeAllRanges();
+    toast('حُفظت الترجمة ملاحظةً مع النص الأصلي.');
+  };
   const p = el('div', { class: 'pop', role: 'dialog', 'aria-label': 'الترجمة' },
     el('h3', {}, el('span', {}, `الترجمة إلى ${LANGS[to]}`), badge,
       el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => { ctrl.abort(); hideSelBar(); } }, icon('close'))),
-    el('div', { class: 'src', lang: from }, text), out, note, activate,
+    el('div', { class: 'src', lang: from }, text), out, note, activate, canSave ? save : null,
     el('div', { class: 'row tr-actions' },
       el('button', { class: 'btn', onclick: async () => { try { await navigator.clipboard.writeText(out.textContent); toast('نُسخت الترجمة.'); } catch { toast('تعذّر النسخ.'); } } }, icon('copy'), 'نسخ'),
       el('span', { class: 'tr-ext-l' }, 'فتح خارج التطبيق:'),
       link(claudeAppUrl(text, to), 'Claude'), link(deeplUrl(text, from, to), 'DeepL'), link(googleUrl(text, to), 'Google')));
   place(p, rect); pop = p;
   const setBadge = (t) => { badge.textContent = t; };
-  const fallbackNote = (t) => { note.hidden = false; note.textContent = t; };
+  const failed = [];
+  const done = (t, eng) => {
+    if (pop !== p) return true;
+    out.textContent = t; result = t; engine = eng; save.hidden = false;
+    if (failed.length) { note.hidden = false; note.textContent = `${failed.join('، ')}. هذه ترجمة ${eng}.`; }
+    return true;
+  };
   if (!online) { out.textContent = 'الترجمة تحتاج اتصالًا بالإنترنت.'; return; }
 
-  // 1) Claude داخل التطبيق: عبر حساب Claude حين يُفتح التطبيق داخله، أو بمفتاح API
+  // 1) المساعد الأكاديمي عبر Claude: بحساب Claude حين يُفتح التطبيق داخله، أو بمفتاح API
   const sample = await cap('sample');
   if (!sample && !hasKey) activate.hidden = false;
   if (sample || hasKey) {
     setBadge('المساعد الأكاديمي · Claude');
     try {
-      let result;
-      if (sample) {
-        result = (await sample(`${ACADEMIC_SYSTEM}\n\nTarget language: ${LANG_EN[to]}\n<text>\n${text}\n</text>`, {
-          modelTier: 'quick', onText: ({ text: t }) => { if (t) out.textContent = t; } })).text.trim();
-      } else {
-        result = await translateClaudeApi(text, to, (t) => { if (t) out.textContent = t; }, ctrl.signal);
-      }
-      if (pop !== p) return;
-      out.textContent = result;
-      return;
+      const t = sample
+        ? (await sample(`${ACADEMIC_SYSTEM}\n\nTarget language: ${LANG_EN[to]}\n<text>\n${text}\n</text>`, { modelTier: 'quick', onText: ({ text: x }) => { if (x) out.textContent = x; } })).text.trim()
+        : await translateClaudeApi(text, to, (x) => { if (x) out.textContent = x; }, ctrl.signal);
+      return done(t, 'المساعد الأكاديمي');
     } catch (e) {
       if (ctrl.signal.aborted || pop !== p) return;
       console.warn('claude translation failed', e);
-      fallbackNote(`تعذّرت الترجمة عبر Claude (${e.reason || 'خطأ غير متوقع'}). هذه ترجمة بديلة.`);
+      failed.push(`تعذّر المساعد الأكاديمي (${e.reason || 'خطأ غير متوقع'})`);
       if (e.reason === 'مفتاح Claude غير صالح') activate.hidden = false;
     }
   }
-
-  // 2) ترجمة سريعة داخل النافذة: Google ثم MyMemory
+  // 2) DeepL بمفتاح القارئ
+  if (S.settings.deeplKey) {
+    setBadge('DeepL');
+    try { return done(await translateDeepL(text, to), 'DeepL'); }
+    catch (e) { if (ctrl.signal.aborted || pop !== p) return; console.warn('deepl failed', e); failed.push(`تعذّر DeepL (${e.reason || 'خطأ غير متوقع'})`); }
+  }
+  // 3) Google ثم MyMemory
   setBadge('ترجمة سريعة · Google');
-  try { out.textContent = await translateGoogle(text, to); return; }
+  try { return done(await translateGoogle(text, to), 'Google'); }
   catch (e) { if (ctrl.signal.aborted || pop !== p) return; console.warn('google translation failed', e); }
   setBadge('ترجمة سريعة · MyMemory');
-  try { out.textContent = await translateFree(text, from === 'ar' ? 'ar' : 'Autodetect', to); }
+  try { done(await translateFree(text, from === 'ar' ? 'ar' : 'Autodetect', to), 'MyMemory'); }
   catch { out.textContent = 'تعذّرت الترجمة الآن. حاول مجددًا بعد قليل.'; setBadge(''); }
+}
+/** DeepL بمفتاح القارئ (المفتاح المجاني ينتهي بـ :fx). يُرسل طلبًا بسيطًا دون ترويسات خاصة. */
+async function translateDeepL(text, to) {
+  const key = S.settings.deeplKey.trim();
+  const host = key.endsWith(':fx') ? 'api-free.deepl.com' : 'api.deepl.com';
+  const target = { en: 'EN-US', fr: 'FR', es: 'ES', tr: 'TR', ar: 'AR' }[to] || 'AR';
+  let res;
+  try { res = await fetch(`https://${host}/v2/translate`, { method: 'POST', body: new URLSearchParams({ auth_key: key, text: text.slice(0, 30000), target_lang: target }) }); }
+  catch (e) { throw Object.assign(e, { reason: 'لا يقبل DeepL الاتصال المباشر من تطبيق الويب' }); }
+  if (!res.ok) throw Object.assign(new Error('deepl ' + res.status), { reason: res.status === 403 ? 'مفتاح DeepL غير صالح' : res.status === 456 ? 'انتهت حصة DeepL الشهرية' : `خطأ ${res.status}` });
+  const j = await res.json();
+  const t = (j.translations || []).map((x) => x.text).join('\n').trim();
+  if (!t) throw Object.assign(new Error('deepl empty'), { reason: 'لم تصل ترجمة' });
+  return t;
+}
+// الترجمة الآلية: حين تُفعَّل تُترجم الفقرة المحددة وحدها بعد أن يستقر التحديد
+let autoTrT = 0;
+function maybeAutoTranslate() {
+  clearTimeout(autoTrT);
+  if (!S.settings.autoTranslate || !curSel) return;
+  const snap = curSel;
+  autoTrT = setTimeout(() => {
+    const sel = getSelection();
+    if (curSel !== snap || !sel || sel.isCollapsed || readerEl.hidden) return;
+    translatePop(snap.text, snap.rect, { sel: snap, auto: true });
+  }, 650);
+}
+function setAutoTranslate(on) {
+  S.settings.autoTranslate = on; saveSettings();
+  R.els?.autoTrBtn?.setAttribute('aria-pressed', String(on));
+  toast(on ? 'الترجمة الآلية مفعّلة: حدّد فقرة لتُترجم مباشرة.' : 'أُوقفت الترجمة الآلية.');
 }
 /** ترجمة Google السريعة، تُعرض داخل النافذة دون فتح المتصفح. */
 async function translateGoogle(text, to) {
@@ -2877,13 +2938,14 @@ function renderNotes() {
       el('small', {}, new Date(n.updated).toLocaleDateString('ar-u-nu-latn', { day: 'numeric', month: 'long' }) + ' · ' + (n.pages.map((p) => p.text).join(' ').trim().slice(0, 60) || `${n.pages.length} صفحة`)))));
     if (!notes.length) list.append(el('p', { class: 'muted', style: 'padding:12px' }, q ? 'لا نتائج.' : 'لا توجد ملاحظات.'));
   } else {
-    const groups = groupMarks().filter((g) => !q || (g.text + g.note).includes(q));
+    const groups = groupMarks().filter((g) => !q || (g.text + g.note + (g.trans?.text || '')).includes(q));
     groups.forEach((g) => {
       const b = S.books.find((x) => x.id === g.bookId);
       list.append(el('button', { class: 'note-item anno-item', 'data-color': g.color, onclick: () => openReader(g.bookId, g.page, !g.rects) },
         el('q', {}, g.text.length > 140 ? g.text.slice(0, 140) + '…' : g.text),
         g.note ? el('small', { style: 'white-space:normal;color:var(--ink)' }, '✎ ' + g.note) : null,
-        el('small', {}, `${b?.title || 'كتاب محذوف'} · صفحة ${g.page}${g.style === 'underline' ? ' · تسطير' : ''}`)));
+        g.trans ? el('small', { class: 'anno-trans', dir: g.trans.to === 'ar' ? 'rtl' : 'ltr', lang: g.trans.to }, g.trans.text.length > 260 ? g.trans.text.slice(0, 260) + '…' : g.trans.text) : null,
+        el('small', {}, `${b?.title || 'كتاب محذوف'} · صفحة ${g.page}${g.style === 'underline' ? ' · تسطير' : ''}${g.trans ? ` · ترجمة ${g.trans.engine}` : ''}`)));
     });
     if (!groups.length) list.append(el('p', { class: 'muted', style: 'padding:12px;line-height:1.8' }, 'ظلّل نصًا داخل أي كتاب وسيظهر هنا مع ملاحظاتك.'));
   }
@@ -3064,13 +3126,28 @@ function translationSettings() {
     try { const r = await translateClaudeApi('sovereignty', 'ar', () => {}); status.textContent = `يعمل. مثال: sovereignty ← ${r.split('\n')[0].slice(0, 40)}`; }
     catch (e) { status.textContent = `لم ينجح: ${e.reason || 'خطأ غير متوقع'}.`; }
   } }, 'اختبار');
+  // DeepL: الخيار الثاني بمفتاح القارئ
+  const dkey = el('input', { class: 'input', type: 'password', placeholder: 'مفتاح DeepL API', value: st.deeplKey || '', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'مفتاح DeepL API', style: 'max-width:280px;direction:ltr' });
+  const dstatus = el('span', { class: 'muted', style: 'font-size:13px' }, st.deeplKey ? 'مفتاح DeepL محفوظ على هذا الجهاز فقط.' : 'اختياري.');
+  const dsave = () => { st.deeplKey = dkey.value.trim(); saveSettings(); dstatus.textContent = st.deeplKey ? 'حُفظ مفتاح DeepL.' : 'أُزيل مفتاح DeepL.'; };
+  dkey.addEventListener('change', dsave);
+  const dtest = el('button', { class: 'btn', onclick: async () => {
+    dsave(); if (!st.deeplKey) return;
+    dstatus.textContent = 'جارٍ الاختبار…';
+    try { const r = await translateDeepL('sovereignty', 'ar'); dstatus.textContent = `يعمل. مثال: sovereignty ← ${r.slice(0, 40)}`; }
+    catch (e) { dstatus.textContent = `لم ينجح: ${e.reason || 'خطأ غير متوقع'}.`; }
+  } }, 'اختبار');
+  const auto = el('div', { class: 'seg', style: 'margin-top:10px' }, ...[[true, 'الترجمة الآلية مفعّلة'], [false, 'عند الضغط على «ترجمة»']].map(([k, l]) =>
+    el('button', { 'aria-pressed': String(!!st.autoTranslate === k), onclick: () => { st.autoTranslate = k; saveSettings(); renderSettings(); } }, l)));
   return el('div', { class: 'set-row' },
-    el('div', { class: 'l' }, el('b', {}, 'المترجم الافتراضي: المساعد الأكاديمي (Claude)'),
-      el('span', {}, 'يترجم بمصطلحات العلوم السياسية والعلاقات الدولية والدراسات الأمنية والقانون الدولي، داخل نافذة مصغّرة فوق الصفحة دون مغادرة التطبيق. يحتاج مفتاح Claude API (من console.anthropic.com)؛ وبدونه أو عند التعذّر تظهر ترجمة Google السريعة في النافذة نفسها.'),
-      el('div', { class: 'row', style: 'margin-top:10px' }, key, test), status));
+    el('div', { class: 'l' }, el('b', {}, 'الترجمة: المساعد الأكاديمي أولًا، ثم DeepL، ثم Google'),
+      el('span', {}, 'يترجم المساعد الأكاديمي بمصطلحات العلوم السياسية والعلاقات الدولية والدراسات الأمنية والقانون الدولي، داخل نافذة مصغّرة فوق الصفحة. يحتاج مفتاح Claude API (من console.anthropic.com)؛ وإن لم يتوفر أو تعذّر انتقلت الترجمة إلى DeepL إن أضفت مفتاحه، ثم إلى Google. ومن نافذة الترجمة تحفظ الترجمة ملاحظةً باللون الذي تختاره.'),
+      el('div', { class: 'row', style: 'margin-top:10px' }, key, test), status,
+      el('div', { class: 'row', style: 'margin-top:10px' }, dkey, dtest), dstatus,
+      el('div', { style: 'margin-top:12px;font-size:14px' }, 'الترجمة الآلية للنص المحدد (أو من زر الترجمة في شريط القارئ):'), auto));
 }
 async function exportBackup() {
-  const dump = { app: 'raff', version: 1, at: new Date().toISOString(), settings: { ...S.settings, claudeKey: '' }, books: S.books, shelves: S.shelves, notes: S.notes, marks: S.marks, daily: Object.values(S.daily), ink: {}, ocr: {} };
+  const dump = { app: 'raff', version: 1, at: new Date().toISOString(), settings: { ...S.settings, claudeKey: '', deeplKey: '' }, books: S.books, shelves: S.shelves, notes: S.notes, marks: S.marks, daily: Object.values(S.daily), ink: {}, ocr: {} };
   for (const s of ['ink', 'ocr']) for (const k of await Store.keys(s)) dump[s][k] = await Store.get(s, k);
   const data = JSON.stringify(dump);
   const dl = await cap('downloads');
