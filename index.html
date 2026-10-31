@@ -276,7 +276,35 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 .sw.classic { background: linear-gradient(#2E1B10 0 55%, rgba(255,226,180,.4) 55% 62%, transparent 62% 85%, rgba(0,0,0,.45) 85%) 3px 3px / calc(100% - 6px) calc(100% - 3px) no-repeat, var(--wood-v, none) 0 0 / 32px 64px, #6E4123; }
 .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .book { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding-bottom: 22px; position: relative; min-width: 0; }
-.book .cover-btn { border: 0; padding: 0; background: none; width: 100%; max-width: 168px; display: block; }
+.book .cover-btn { border: 0; padding: 0; background: none; width: 100%; max-width: 168px; display: block; position: relative; }
+/* اللون المميّز يعني دائمًا «ما يخصّك»: تحديدك، ومكانك، وتقدّمك، والكتاب الذي ختمته */
+::selection { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+.book-progress.unread > i { width: 0 !important; }
+.book-progress.done { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.read-ribbon { position: absolute; top: -4px; inset-inline-start: 12px; width: 15px; height: 32px; background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 76%, 0 100%); filter: drop-shadow(0 2px 2px rgba(0,0,0,.28)); pointer-events: none; }
+/* بطاقة ختم الكتاب */
+.finish-card { position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom, 0px)); z-index: 95; width: min(520px, calc(100vw - 24px));
+  transform: translateX(-50%); display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: start; padding: 18px 18px 16px 14px;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; direction: rtl;
+  box-shadow: 0 2px 6px rgba(0,0,0,.08), 0 22px 50px -16px rgba(0,0,0,.38); animation: fcIn .55s cubic-bezier(.16, 1, .3, 1) both; }
+.finish-card.leaving { animation: fcOut .26s ease-in both; }
+.fc-ribbon { display: block; width: 22px; height: 54px; margin-top: -19px; background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 80%, 0 100%); animation: fcRibbon .7s .18s cubic-bezier(.16, 1, .3, 1) both; }
+.fc-body { display: grid; gap: 2px; min-width: 0; }
+.fc-title { font-family: var(--font-display); font-size: 22px; line-height: 1.3; color: var(--accent); }
+.fc-book { font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.fc-facts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; }
+.fc-fact { display: grid; line-height: 1.25; }
+.fc-fact b { font-size: 17px; font-weight: 700; }
+.fc-fact span { font-size: 12px; color: var(--muted); }
+.fc-actions { display: grid; justify-items: end; gap: 8px; }
+.fc-actions .btn { grid-row: 2; white-space: nowrap; min-height: 38px; font-size: 13.5px; }
+@keyframes fcIn { from { opacity: 0; transform: translate(-50%, 18px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes fcOut { to { opacity: 0; transform: translate(-50%, 10px); } }
+@keyframes fcRibbon { from { transform: translateY(-100%); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .finish-card, .finish-card.leaving, .fc-ribbon { animation: none; } }
+@media (max-width: 560px) { .finish-card { grid-template-columns: auto 1fr; } .fc-actions { grid-column: 1 / -1; grid-auto-flow: column; justify-content: space-between; } .fc-actions .btn { grid-row: auto; } }
 .cover {
   width: 100%; aspect-ratio: 1 / 1.38; object-fit: cover; display: block; border-radius: 2px 5px 5px 2px; background: var(--page);
   box-shadow: -4px 0 0 rgba(0,0,0,.08) inset, 0 2px 4px rgba(0,0,0,.18), 0 12px 18px -8px rgba(0,0,0,.45); max-width: 100%;
@@ -399,7 +427,7 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
   transform-origin: 0 0; z-index: 2; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
 .textLayer span.markedContent { top: 0; height: 0; }
-.textLayer ::selection { background: rgba(30, 106, 100, .3); }
+.textLayer ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
 .textLayer br::selection { background: transparent; }
 .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; -webkit-user-select: none; user-select: none; }
 .textLayer .endOfContent.active { top: 0; }
@@ -440,7 +468,7 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 .leaf .face.back { transform: rotateY(180deg); }
 .leaf .face canvas { display: block; width: 100%; height: 100%; }
 .leaf .shade { position: absolute; inset: 0; }
-.tap-zone:focus-visible { outline: none; background: linear-gradient(90deg, transparent, rgba(30,106,100,.06), transparent); }
+.tap-zone:focus-visible { outline: none; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 7%, transparent), transparent); }
 .turn-dim { position: absolute; top: 0; z-index: 5; pointer-events: none; background: linear-gradient(90deg, rgba(0,0,0,.9), rgba(0,0,0,.55)); opacity: 0; }
 .pg-label { font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--muted); margin: 18px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .ocr-text section:first-child .pg-label { margin-top: 0; }

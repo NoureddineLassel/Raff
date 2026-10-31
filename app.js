@@ -63,7 +63,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v30'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v31'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1063,8 +1063,9 @@ function bookCard(b) {
   const card = el('div', { class: 'book' });
   const more = el('button', { class: 'icon-btn more', 'aria-label': 'خيارات الكتاب', onclick: (e) => { e.stopPropagation(); toggleMenu(card, b); } }, icon('more'));
   card.append(...[
-    el('button', { class: 'cover-btn', 'aria-label': `فتح ${b.title}`, onclick: () => openReader(b.id) }, el('img', { class: 'cover', src: b.cover, alt: '' })),
-    el('div', { class: 'book-progress', title: `${pct}%` }, el('i', { style: `width:${pct}%` })),
+    el('button', { class: 'cover-btn', 'aria-label': `فتح ${b.title}${b.finishedAt ? ' (مقروء)' : ''}`, onclick: () => openReader(b.id) }, el('img', { class: 'cover', src: b.cover, alt: '' }),
+      b.finishedAt ? el('i', { class: 'read-ribbon', title: `مقروء · ${new Date(b.finishedAt).toLocaleDateString('ar-u-nu-latn', { day: 'numeric', month: 'long', year: 'numeric' })}` }) : null),
+    el('div', { class: 'book-progress' + (pct === 0 ? ' unread' : b.finishedAt ? ' done' : ''), title: pct ? `قُرئ ${pct}%` : 'لم يُفتح بعد' }, el('i', { style: `width:${pct}%` })),
     el('div', { class: 'book-meta' }, el('div', { class: 'book-title', title: b.title }, b.title), more),
     bookTags(b).length ? el('div', { class: 'book-tags', title: bookTags(b).join('، ') }, ...bookTags(b).map((t) => el('span', {}, t))) : null,
   ].filter(Boolean)); // append الأصلية تكتب null نصًا
@@ -2056,6 +2057,29 @@ function markSeen(n) {
   if (!b.seen.includes(n)) { b.seen.push(n); saveBook(b); }
   if (!d.pages.includes(key)) { d.pages.push(key); saveDaily(d); }
   updateChrome(); changed('pages');
+  if (!b.finishedAt && b.pages > 1 && b.seen.length >= b.pages) { b.finishedAt = Date.now(); saveBook(b); showFinished(b); }
+}
+// ---------- Finishing a book ----------
+// لحظة ختم الكتاب: تُعرض مرة واحدة حين تُقرأ كل صفحاته، بما بذله القارئ فيه، دون أن توقف القراءة.
+const minutesText = (sec) => { const m = Math.max(1, Math.round((sec || 0) / 60)); return m < 60 ? `${fmt(m)} دقيقة` : `${fmt(Math.floor(m / 60))} س ${m % 60 ? fmt(m % 60) + ' د' : ''}`.trim(); };
+function showFinished(b) {
+  document.querySelector('.finish-card')?.remove();
+  const gs = groupMarks().filter((g) => g.bookId === b.id);
+  const notes = gs.filter((g) => g.note || g.trans).length;
+  const days = Math.max(1, Math.round((b.finishedAt - (b.added || b.finishedAt)) / 864e5));
+  const fact = (v, l) => el('div', { class: 'fc-fact' }, el('b', { class: 'num' }, v), el('span', {}, l));
+  const close = () => { card.classList.add('leaving'); setTimeout(() => card.remove(), 260); };
+  const card = el('div', { class: 'finish-card', role: 'status', 'aria-live': 'polite' },
+    el('i', { class: 'fc-ribbon', 'aria-hidden': 'true' }),
+    el('div', { class: 'fc-body' },
+      el('b', { class: 'fc-title' }, 'ختمتَ الكتاب'),
+      el('span', { class: 'fc-book', dir: 'auto' }, b.title),
+      el('div', { class: 'fc-facts' }, fact(minutesText(b.secs), 'من القراءة'), fact(fmt(gs.length), gs.length === 1 ? 'تظليل' : 'تظليلات'), fact(fmt(notes), 'ملاحظات وترجمات'), fact(fmt(days), days === 1 ? 'يوم' : 'أيام'))),
+    el('div', { class: 'fc-actions' },
+      gs.length ? el('button', { class: 'btn', onclick: () => { close(); openMetaSheet(b); } }, 'إرسال ملاحظاته إلى Zotero') : null,
+      el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: close }, icon('close'))));
+  document.body.append(card);
+  setTimeout(() => { if (card.isConnected && !card.matches(':hover, :focus-within')) close(); }, 12000);
 }
 const thumbCache = new Map();
 async function thumbURL(n, withInk) {
@@ -2695,7 +2719,7 @@ function showSelBar(rect, mark) {
     el('button', { onclick: () => translatePop(text, rect, { sel: mark ? null : curSel, mark }) }, icon('translate'), 'ترجمة'),
     el('button', { onclick: () => notePop(mark ? mark.group : addMarks('highlight', 'yellow', true), rect) }, icon('note'), 'ملاحظة'),
     el('button', { onclick: () => copyText(text) }, icon('copy'), 'نسخ'),
-    mark ? el('button', { onclick: () => removeGroup(mark.group) }, icon('trash'), 'إزالة') : null);
+    ...(mark ? [el('button', { onclick: () => removeGroup(mark.group) }, icon('trash'), 'إزالة')] : [])); // append الأصلية تكتب null نصًا
   place(b, rect); selBar = b;
 }
 async function copyText(t) {
@@ -3615,6 +3639,8 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.cla
   const [books, shelves, notes, marks, daily, settings] = await Promise.all(
     [Store.all('books'), Store.all('shelves'), Store.all('notes'), Store.all('marks'), Store.all('daily'), Store.get('meta', 'settings')]);
   S.books = books; S.notes = notes; S.marks = marks;
+  // الكتب المقروءة كاملة قبل هذه الميزة تأخذ شريطها دون احتفال
+  for (const b of S.books) if (!b.finishedAt && b.pages > 1 && (b.seen || []).length >= b.pages) { b.finishedAt = b.lastOpened || b.added || Date.now(); Store.put('books', b.id, b); }
   // ترجمات حُفظت قبل تنظيف علامات التنسيق
   for (const m of S.marks) if (m.trans?.text && /\*\*|__|^#|`/m.test(m.trans.text)) { m.trans.text = plainText(m.trans.text).trim(); Store.put('marks', m.id, m); }
   // ترتيب الرفوف يختاره القارئ بالسحب؛ الرفوف القديمة بلا ترتيب تأخذ ترتيب إنشائها
