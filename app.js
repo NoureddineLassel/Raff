@@ -56,6 +56,8 @@ const ICONS = {
   chat: 'M4 5h16v11H9l-5 4z',
   cap: 'M2 9l10-5 10 5-10 5zM6 11.2V16c0 1.4 2.7 3 6 3s6-1.6 6-3v-4.8M22 9v5',
   book: 'M4 5c2.5-1.3 5.5-1.3 8 0v14c-2.5-1.3-5.5-1.3-8 0zM12 5c2.5-1.3 5.5-1.3 8 0v14c-2.5-1.3-5.5-1.3-8 0z',
+  search: 'M10.5 4a6.5 6.5 0 100 13 6.5 6.5 0 100-13zM15.5 15.5L20 20',
+  eye: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zM12 9a3 3 0 100 6 3 3 0 100-6z',
   clock: 'M12 3a9 9 0 100 18 9 9 0 100-18zM12 7v5l3 2',
   zoom: 'M10.5 4a6.5 6.5 0 100 13 6.5 6.5 0 100-13zM15.5 15.5L21 21M8 10.5h5M10.5 8v5',
 };
@@ -71,7 +73,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v34'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v35'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1310,6 +1312,7 @@ async function openReader(id, page, withPanel) {
   try { R.pdf = await pdfjsLib.getDocument({ data: buf }).promise; } catch { toast('تعذّر فتح الملف.'); return; }
   R.book = book; R.pen = false; R.thumbs = false; R.drawer = false; R.turning = false; R.panel = !!withPanel || R.panel; R.zoom = 1;
   if (sizePop) { sizePop.remove(); sizePop = null; }
+  comfortPop = null; findPop = null; R.find = null;
   R.page = page || book.lastPage || 1;
   if (!book.dir) book.dir = await detectDir(R.pdf);
   book.lastOpened = Date.now(); saveBook(book);
@@ -1361,7 +1364,7 @@ async function repairMarkTexts(book) {
 function closeReader() {
   hideSelBar();
   if (metaWin && (S.settings.metaMode || 'docked') !== 'float') metaWin.close(true);
-  readerEl.hidden = true; readerEl.replaceChildren();
+  readerEl.hidden = true; readerEl.replaceChildren(); comfortPop = null; findPop = null; R.find = null;
   if (R.pdf) R.pdf.destroy();
   R.pdf = null; R.book = null; R.slots = []; R.activeInk = null;
   pageCache.clear(); textCache.clear();
@@ -1406,7 +1409,10 @@ function buildReader() {
   E.tapPrev = el('button', { class: 'tap-zone prev', 'aria-label': 'الصفحة السابقة', onclick: () => goto(R.page - stepSize(), -1) });
   // الصفحة المكبَّرة أو بملاءمة العرض تُمرَّر داخل هذا الإطار
   E.scroller = el('div', { class: 'scroller' }, el('div', { class: 'scroll-inner' }, E.bookEl));
-  E.stage = el('div', { class: 'stage' }, E.scroller, E.tapNext, E.tapPrev);
+  E.comfortBtn = el('button', { class: 'dock-btn', title: 'راحة العين', 'aria-label': 'راحة العين', 'aria-haspopup': 'dialog', onclick: toggleComfortPop }, icon('eye'));
+  E.findBtn = el('button', { class: 'dock-btn', title: 'البحث في الكتاب', 'aria-label': 'البحث في الكتاب', 'aria-haspopup': 'dialog', onclick: () => (findPop ? closeFindPop() : openFindPop()) }, icon('search'));
+  E.dock = el('div', { class: 'page-dock', role: 'toolbar', 'aria-label': 'راحة العين والبحث' }, E.comfortBtn, E.findBtn);
+  E.stage = el('div', { class: 'stage' }, E.scroller, E.tapNext, E.tapPrev, E.dock);
   setupPinch(E);
   E.penBar = penBar(() => R.activeInk || R.slots[0]?.ink); E.penBar.hidden = true; E.stage.append(E.penBar);
   E.thumbs = el('div', { class: 'thumbs', hidden: true }); E.stage.append(E.thumbs);
@@ -1430,6 +1436,7 @@ function buildReader() {
     layout();
   }, 150)).observe(E.stage);
   setPanel(R.panel, true);
+  applyComfort();
 }
 
 /** يحسب مقاس الصفحة ويبني خانة لكل صفحة ظاهرة، ثم يعرضها دون حركة. */
@@ -1461,6 +1468,7 @@ async function layout() {
   buildSlots();
   updateChrome();
   await showSpread(start);
+  placeDock();
 }
 function buildSlots() {
   const E = R.els, { w, h, cols, vw, vh, crop: c } = R.size;
@@ -1472,11 +1480,12 @@ function buildSlots() {
     const inkHost = el('div');
     const flag = el('div', { class: 'bookmark-flag', hidden: true });
     const hl = el('div', { class: 'hl-layer' });
+    const fl = el('div', { class: 'find-layer' });
     const tl = el('div', { class: 'textLayer' });
-    const node = el('div', { class: 'pg', 'data-side': side, style: `left:${-c.l * w}px;top:${-c.t * h}px;width:${w}px;height:${h}px` }, canvas, hl, tl, inkHost);
+    const node = el('div', { class: 'pg', 'data-side': side, style: `left:${-c.l * w}px;top:${-c.t * h}px;width:${w}px;height:${h}px` }, canvas, hl, fl, tl, inkHost);
     const clip = el('div', { class: 'pgclip', 'data-side': side, style: `left:${side === 'right' ? vw : 0}px;width:${vw}px;height:${vh}px` }, node, flag);
     E.bookEl.append(clip);
-    const slot = { side, node, clip, canvas, hl, tl, flag, page: null };
+    const slot = { side, node, clip, canvas, hl, fl, tl, flag, page: null };
     bindTextLayer(tl);
     slot.ink = new Ink(inkHost, {
       onStart: (k) => { R.activeInk = k; },
@@ -1559,7 +1568,7 @@ function decorate(src, n, strokes) {
 async function fillSlot(slot, n) {
   slot.page = n ?? null;
   slot.node.classList.toggle('blank', !n); slot.clip.classList.toggle('blank', !n);
-  slot.tl.replaceChildren(); slot.hl.replaceChildren(); slot.hasText = false;
+  slot.tl.replaceChildren(); slot.hl.replaceChildren(); slot.fl.replaceChildren(); slot.hasText = false;
   if (!n) { slot.canvas.width = 1; slot.canvas.height = 1; slot.ink.load([]); slot.flag.hidden = true; return; }
   const src = await pageCanvas(n);
   if (slot.page !== n) return;
@@ -1567,6 +1576,7 @@ async function fillSlot(slot, n) {
   slot.canvas.getContext('2d').drawImage(src, 0, 0);
   slot.ink.resize();
   renderPageMarks(slot);
+  renderFindHits(slot);
   const strokes = (await Store.get('ink', pageKey(n))) || [];
   if (slot.page === n) slot.ink.load(strokes);
   slot.flag.hidden = !R.book.bookmarks.includes(n);
@@ -1760,6 +1770,234 @@ function renderSizePop() {
 document.addEventListener('pointerdown', (e) => {
   if (sizePop && !sizePop.contains(e.target) && !R.els?.sizeBtn.contains(e.target)) { sizePop.remove(); sizePop = null; R.els?.sizeBtn.setAttribute('aria-pressed', 'false'); }
 }, true);
+// ---------- Page dock: eye comfort and search, beside the page ----------
+// شريط صغير ملاصق لحافة الصفحة فيه زرّان: راحة العين، والبحث داخل الكتاب.
+const COMFORT_TONES = [['none', 'أصلي'], ['warm', 'دافئ'], ['sepia', 'ورقي'], ['gray', 'رمادي هادئ'], ['night', 'ليلي'], ['dusk', 'ليلي دافئ']];
+const comfort = () => ({ tone: 'none', bright: 1, warm: 0, ...(S.settings.comfort || {}) });
+function comfortFilter(c) {
+  const f = {
+    warm: ['sepia(.22)', 'saturate(1.08)'], sepia: ['sepia(.55)', 'brightness(.97)', 'contrast(.94)'], gray: ['grayscale(1)', 'contrast(.88)', 'brightness(.95)'],
+    night: ['invert(.9)', 'hue-rotate(180deg)', 'contrast(.92)'], dusk: ['invert(.88)', 'hue-rotate(180deg)', 'sepia(.5)', 'contrast(.9)'],
+  }[c.tone] || [];
+  if (c.warm > 0) f.push(`sepia(${(c.warm * 0.6).toFixed(2)})`, `saturate(${(1 + c.warm * 0.3).toFixed(2)})`);
+  if (c.bright < 1) f.push(`brightness(${c.bright.toFixed(2)})`);
+  return f.length ? f.join(' ') : 'none';
+}
+function applyComfort() {
+  const st = R.els?.stage; if (!st) return;
+  const c = comfort();
+  st.style.setProperty('--page-filter', comfortFilter(c));
+  st.dataset.comfort = c.tone;
+  R.els.comfortBtn?.setAttribute('aria-pressed', String(c.tone !== 'none' || c.bright < 1 || c.warm > 0));
+}
+function setComfort(patch) { S.settings.comfort = { ...comfort(), ...patch }; saveSettings(); applyComfort(); renderComfortPop(); }
+let comfortPop = null, findPop = null;
+function closeComfortPop() { comfortPop?.remove(); comfortPop = null; R.els?.comfortBtn?.classList.remove('open'); }
+function toggleComfortPop() {
+  if (comfortPop) return closeComfortPop();
+  closeFindPop();
+  comfortPop = el('div', { class: 'dock-pop comfort-pop', role: 'dialog', 'aria-label': 'راحة العين' });
+  readerEl.append(comfortPop); R.els.comfortBtn.classList.add('open');
+  renderComfortPop();
+}
+function renderComfortPop() {
+  if (!comfortPop) return;
+  const c = comfort();
+  const slider = (label, key, min, max, val, fmtV) => {
+    const out = el('span', { class: 'num muted' }, fmtV(val));
+    const inp = el('input', { type: 'range', min, max, value: Math.round(val * 100), 'aria-label': label,
+      oninput: (e) => { const v = +e.target.value / 100; out.textContent = fmtV(v); S.settings.comfort = { ...comfort(), [key]: v }; applyComfort(); },
+      onchange: () => saveSettings() });
+    return el('label', { class: 'cf-slider' }, el('span', { class: 'cf-l' }, label, out), inp);
+  };
+  comfortPop.replaceChildren(
+    el('div', { class: 'dp-head' }, el('b', {}, 'راحة العين'), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: closeComfortPop }, icon('close'))),
+    el('div', { class: 'cf-tones', role: 'radiogroup', 'aria-label': 'لون الصفحة' }, ...COMFORT_TONES.map(([k, l]) =>
+      el('button', { class: 'cf-tone', role: 'radio', 'aria-checked': String(c.tone === k), onclick: () => setComfort({ tone: k }) },
+        el('span', { class: 'cf-sw', style: `filter:${comfortFilter({ tone: k, bright: 1, warm: 0 })}`, 'aria-hidden': 'true' }, el('i'), el('i'), el('i')), l))),
+    slider('السطوع', 'bright', 45, 100, c.bright, (v) => `${Math.round(v * 100)}%`),
+    slider('تخفيف الضوء الأزرق', 'warm', 0, 100, c.warm, (v) => (v ? `${Math.round(v * 100)}%` : 'متوقف')),
+    el('div', { class: 'dp-foot' },
+      el('small', { class: 'muted' }, 'يُطبَّق على صفحات كل الكتب، ولا يغيّر الملف.'),
+      el('button', { class: 'btn ghost', disabled: c.tone === 'none' && c.bright === 1 && !c.warm, onclick: () => setComfort({ tone: 'none', bright: 1, warm: 0 }) }, 'إعادة الضبط')));
+  placePop(comfortPop);
+}
+/** يضع الشريط ملاصقًا لحافة الصفحة، أو داخل زاويتها حين لا يتسع المكان بجانبها. */
+function placeDock() {
+  const E = R.els; if (!E?.dock || !R.size) return;
+  const s = E.stage.getBoundingClientRect(), b = E.bookEl.getBoundingClientRect(), W = E.dock.offsetWidth || 46;
+  let x = b.right + 10;
+  if (E.stage.classList.contains('wide') || x + W > s.right - 6) x = Math.min(b.right, s.right) - W - 10;
+  const y = Math.max(s.top + 10, b.top);
+  E.dock.style.left = Math.round(x - s.left) + 'px'; E.dock.style.top = Math.round(y - s.top) + 'px';
+  if (comfortPop) placePop(comfortPop);
+  if (findPop) placePop(findPop);
+}
+function placePop(pop) {
+  const d = R.els.dock.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight, m = 12;
+  let left = d.left - w - 10, top = d.top;
+  if (left < m) {
+    if (d.right + 10 + w <= innerWidth - m) left = d.right + 10;
+    else { left = Math.max(m, (innerWidth - w) / 2); top = d.bottom + 8; } // الشاشة الضيقة: تحت الشريط فلا تغطيه
+  }
+  pop.style.left = Math.round(left) + 'px';
+  pop.style.top = Math.round(Math.max(m, Math.min(top, innerHeight - h - m))) + 'px';
+}
+document.addEventListener('pointerdown', (e) => {
+  if (comfortPop && !comfortPop.contains(e.target) && !R.els?.comfortBtn?.contains(e.target)) closeComfortPop();
+}, true);
+
+// ---------- Search inside the book ----------
+// يُطابَق النص بعد توحيد الهمزات والياء والتاء المربوطة وحذف التشكيل والتطويل، وحالة الأحرف اللاتينية ونبراتها.
+const FOLD = { 'أ': 'ا', 'إ': 'ا', 'آ': 'ا', 'ٱ': 'ا', 'ى': 'ي', 'ة': 'ه' };
+function foldChar(ch) {
+  if (/[ً-ٰٟـ\u0000​-‏﻿]/.test(ch)) return '';
+  if (/\s/.test(ch)) return ' ';
+  return [...ch.normalize('NFKD').replace(/[̀-ًͯ-ٰٟ]/g, '').toLowerCase()].map((c) => FOLD[c] || c).join('');
+}
+function foldQuery(q) { return [...q].map(foldChar).join('').replace(/ +/g, ' ').trim(); }
+const findCache = new Map();
+/** نص الصفحة المطوي، مع موضع كل حرف في النص الأصلي وفي عناصر الصفحة (لرسم مواضع النتائج). */
+async function findIndex(n) {
+  const key = `${R.book.id}:${n}`;
+  if (findCache.has(key)) return findCache.get(key);
+  let items = null, vp = null, parts = [];
+  const tc = await pageTextContent(n);
+  const its = (tc?.items || []).filter((it) => typeof it.str === 'string');
+  if (its.reduce((a, it) => a + it.str.trim().length, 0) >= 10) {
+    items = its; vp = (await R.pdf.getPage(n)).getViewport({ scale: 1 });
+    parts = its.map((it, i) => [it.str, i]);
+  } else {
+    const rec = await Store.get('ocr', pageKey(n)); // الصفحات المصوّرة: نص التعرّف الضوئي إن وُجد، دون مواضع
+    if (rec?.paras?.length) parts = [[rec.paras.join(' '), -1]];
+  }
+  let orig = '', norm = '';
+  const map = []; // لكل حرف مطوي: [موضعه في الأصل، رقم العنصر، موضعه في العنصر]
+  for (const [str, i] of parts) {
+    for (let k = 0; k < str.length; k++) {
+      const f = foldChar(str[k]);
+      for (const c of f) { if (c === ' ' && (!norm || norm.endsWith(' '))) continue; norm += c; map.push([orig.length + k, i, k]); }
+    }
+    orig += str + ' ';
+    if (!norm.endsWith(' ')) { norm += ' '; map.push([orig.length - 1, -1, 0]); }
+  }
+  const idx = { orig, norm, map, items, vp };
+  findCache.set(key, idx);
+  if (findCache.size > 400) findCache.delete(findCache.keys().next().value);
+  return idx;
+}
+/** مستطيلات النتيجة بنسبة الصفحة الكاملة، محسوبة من موضع الكلمة داخل عنصر النص. */
+function hitRects(idx, a, z) {
+  if (!idx.items) return [];
+  const per = new Map();
+  for (let p = a; p < z; p++) { const [, i, k] = idx.map[p]; if (i < 0) continue; const r = per.get(i) || [k, k]; r[0] = Math.min(r[0], k); r[1] = Math.max(r[1], k); per.set(i, r); }
+  const { vp } = idx, out = [];
+  for (const [i, [k0, k1]] of per) {
+    const it = idx.items[i], len = Math.max(1, it.str.length);
+    const tx = pdfjsLib.Util.transform(vp.transform, it.transform), fh = Math.hypot(tx[2], tx[3]) || 10;
+    const w = it.width * vp.scale || fh * len * 0.5;
+    const rtl = it.dir === 'rtl' || isArabic(it.str);
+    const f0 = k0 / len, f1 = (k1 + 1) / len;
+    const x = rtl ? tx[4] + w * (1 - f1) : tx[4] + w * f0;
+    out.push([x / vp.width, (tx[5] - fh * 1.05) / vp.height, (w * (f1 - f0)) / vp.width, (fh * 1.3) / vp.height]);
+  }
+  return out;
+}
+function closeFindPop() {
+  if (!findPop) return;
+  findPop.remove(); findPop = null; R.els?.findBtn?.classList.remove('open');
+  if (R.find) R.find.token++;
+  R.find = null; R.slots.forEach(renderFindHits);
+}
+function openFindPop(prefill) {
+  if (findPop) { findPop.querySelector('input').focus(); return; }
+  closeComfortPop();
+  R.find = R.find || { q: '', hits: [], idx: -1, token: 0, done: true, scanned: 0 };
+  const inp = el('input', { class: 'input', type: 'search', placeholder: 'ابحث في هذا الكتاب', 'aria-label': 'البحث في الكتاب', dir: 'auto', enterkeyhint: 'search', value: prefill || R.find.q });
+  const status = el('div', { class: 'fd-status muted', 'aria-live': 'polite' });
+  const prev = el('button', { class: 'icon-btn', 'aria-label': 'النتيجة السابقة', title: 'السابقة', onclick: () => stepHit(-1) }, icon('back'));
+  const next = el('button', { class: 'icon-btn fd-next', 'aria-label': 'النتيجة التالية', title: 'التالية', onclick: () => stepHit(1) }, icon('back'));
+  const list = el('ol', { class: 'fd-list' });
+  findPop = el('div', { class: 'dock-pop find-pop', role: 'dialog', 'aria-label': 'البحث في الكتاب' },
+    el('div', { class: 'dp-head' }, el('b', {}, 'البحث في الكتاب'), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق البحث', onclick: closeFindPop }, icon('close'))),
+    el('div', { class: 'fd-row' }, inp, el('div', { class: 'fd-nav' }, prev, next)), status, list);
+  R.els.find = { inp, status, list, prev, next };
+  readerEl.append(findPop); R.els.findBtn.classList.add('open');
+  const run = debounce(() => runFind(inp.value), 280);
+  inp.addEventListener('input', run);
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); if (foldQuery(inp.value) !== foldQuery(R.find.q)) runFind(inp.value); else stepHit(e.shiftKey ? -1 : 1); }
+    if (e.key === 'Escape') { e.stopPropagation(); closeFindPop(); }
+  });
+  renderFindPop(); placePop(findPop);
+  inp.focus(); inp.select();
+  if (prefill) runFind(prefill);
+}
+async function runFind(q) {
+  const F = R.find; if (!F) return;
+  const token = ++F.token, fq = foldQuery(q);
+  Object.assign(F, { q, hits: [], idx: -1, done: !fq, scanned: 0 });
+  R.slots.forEach(renderFindHits);
+  renderFindPop();
+  if (fq.length < 2) { F.done = true; renderFindPop(); return; }
+  const book = R.book, total = book.pages;
+  // تُعرض النتائج بترتيب الصفحات، ثم يُنتقل إلى أول نتيجة من الصفحة الحالية فما بعدها
+  for (let n = 1; n <= total; n++) {
+    if (R.find !== F || F.token !== token || R.book !== book) return;
+    const idx = await findIndex(n);
+    for (let p = idx.norm.indexOf(fq); p >= 0 && F.hits.length < 2000; p = idx.norm.indexOf(fq, p + 1)) {
+      const a = idx.map[p][0], z = idx.map[p + fq.length - 1][0] + 1;
+      const s0 = Math.max(0, a - 38), s1 = Math.min(idx.orig.length, z + 38);
+      F.hits.push({ page: n, rects: hitRects(idx, p, p + fq.length),
+        before: (s0 ? '…' : '') + idx.orig.slice(s0, a).replace(/\s+/g, ' '), match: idx.orig.slice(a, z), after: idx.orig.slice(z, s1).replace(/\s+/g, ' ') + (s1 < idx.orig.length - 1 ? '…' : '') });
+    }
+    F.scanned = n;
+    if (n % 8 === 0 || n === total) { renderFindPop(); R.slots.forEach(renderFindHits); await new Promise((r) => setTimeout(r)); }
+  }
+  F.done = true;
+  // أول نتيجة في الصفحة الحالية أو بعدها
+  if (F.hits.length && F.idx < 0) { const i = F.hits.findIndex((h) => h.page >= R.page); showHit(i < 0 ? 0 : i, true); }
+  renderFindPop();
+}
+function renderFindPop() {
+  const F = R.find, f = R.els?.find; if (!F || !f || !findPop) return;
+  const n = F.hits.length, pages = new Set(F.hits.map((h) => h.page)).size;
+  f.status.textContent = !foldQuery(F.q) ? 'اكتب كلمة أو عبارة، ثم اضغط إدخال للانتقال بين النتائج.'
+    : foldQuery(F.q).length < 2 ? 'اكتب حرفين على الأقل.'
+    : !F.done ? `جارٍ البحث… الصفحة ${fmt(F.scanned)} من ${fmt(R.book.pages)}${n ? ` — ${fmt(n)} نتيجة حتى الآن` : ''}`
+    : n ? `${F.idx >= 0 ? `${fmt(F.idx + 1)} من ` : ''}${fmt(n)} ${n === 1 ? 'نتيجة' : 'نتيجة'} في ${pages === 1 ? 'صفحة واحدة' : `${fmt(pages)} صفحات`}`
+    : 'لا نتائج. جرّب كلمة أقصر، أو شغّل التعرّف الضوئي إن كانت الصفحات مصوّرة.';
+  f.prev.disabled = f.next.disabled = !n;
+  const shown = F.hits.slice(0, 300);
+  f.list.replaceChildren(...[...shown.map((h, i) => el('li', {},
+    el('button', { class: 'fd-hit', 'aria-current': String(i === F.idx), onclick: () => showHit(i) },
+      el('span', { class: 'fd-pg num' }, `ص ${fmt(h.page)}`),
+      el('span', { class: 'fd-snip', dir: 'auto' }, h.before, el('mark', {}, h.match), h.after)))),
+    n > shown.length ? el('li', { class: 'muted fd-more' }, `و${fmt(n - shown.length)} نتيجة أخرى. انتقل إليها بالسهمين.`) : null].filter(Boolean));
+  f.list.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' });
+}
+function stepHit(d) { const F = R.find; if (!F?.hits.length) return; showHit((F.idx + d + F.hits.length) % F.hits.length); }
+async function showHit(i, quiet) {
+  const F = R.find; if (!F?.hits[i]) return;
+  F.idx = i; const h = F.hits[i];
+  renderFindPop();
+  if (!spreadPages(R.page).includes(h.page)) await goto(h.page, 0);
+  R.slots.forEach(renderFindHits);
+  if (!quiet) R.els.bookEl.querySelector('.find-layer i.cur')?.scrollIntoView({ block: 'center', inline: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
+}
+function renderFindHits(slot) {
+  if (!slot.fl) return;
+  slot.fl.replaceChildren();
+  const F = R.find; if (!F || !slot.page) return;
+  F.hits.forEach((h, i) => {
+    if (h.page !== slot.page) return;
+    for (const [x, y, w, hh] of h.rects) slot.fl.append(el('i', { class: i === F.idx ? 'cur' : null, style: `left:${x * 100}%;top:${y * 100}%;width:${w * 100}%;height:${hh * 100}%` }));
+  });
+}
+document.addEventListener('keydown', (e) => {
+  if (readerEl.hidden || !R.book) return;
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); const sel = String(getSelection() || '').trim(); openFindPop(sel && sel.length < 80 ? sel : ''); }
+});
 /** التكبير بإصبعين (وعلى الحاسوب: ctrl مع عجلة الفأرة أو لوحة اللمس). */
 function setupPinch(E) {
   let pinch = null;
@@ -2235,7 +2473,7 @@ document.addEventListener('keydown', (e) => {
   const leftDir = isLtr() ? -1 : 1;
   if (e.key === 'ArrowLeft') goto(R.page + leftDir * stepSize(), leftDir);
   else if (e.key === 'ArrowRight') goto(R.page - leftDir * stepSize(), -leftDir);
-  else if (e.key === 'Escape') { if ($('.sel-bar') || $('.pop')) { hideSelBar(); getSelection().removeAllRanges(); } else if (R.drawer) setDrawer(false); else closeReader(); }
+  else if (e.key === 'Escape') { if (comfortPop) closeComfortPop(); else if (findPop) closeFindPop(); else if ($('.sel-bar') || $('.pop')) { hideSelBar(); getSelection().removeAllRanges(); } else if (R.drawer) setDrawer(false); else closeReader(); }
   else if ((e.metaKey || e.ctrlKey) && e.key === 'z' && R.pen) { e.preventDefault(); const k = R.activeInk || R.slots[0]?.ink; e.shiftKey ? k?.redo() : k?.undo(); }
 });
 
