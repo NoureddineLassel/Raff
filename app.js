@@ -63,7 +63,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v31'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v32'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -194,6 +194,15 @@ function setSaveState(st) {
   const where = Cloud.ok ? 'في حسابك' : Local.ok ? 'على هذا الجهاز' : '';
   if (!where) n.textContent = 'الحفظ مؤقت: التخزين غير متاح';
   else n.textContent = st === 'saving' ? 'جارٍ الحفظ…' : `حُفظ ${where} ${new Date().toLocaleTimeString('ar-u-nu-latn', { hour: '2-digit', minute: '2-digit' })}`;
+  updateLibStatus();
+}
+/** حالة الحفظ في شريط المكتبة السفلي (ثيم «المكتبة الرقمية»). */
+function updateLibStatus() {
+  const pill = document.querySelector('.lf-status'), n = $('#saveState'); if (!pill || !n) return;
+  const saving = n.dataset.state === 'saving';
+  pill.dataset.state = saving ? 'saving' : 'ready';
+  pill.lastChild.textContent = saving ? 'جارٍ الحفظ…' : 'جاهز للاستخدام';
+  pill.title = n.textContent;
 }
 
 // ---------- App state ----------
@@ -841,6 +850,7 @@ const SHELF_THEMES = {
   ebony: { name: 'أبنوس', back: '#2B2624', hi: '#5A4C43', board: '#2E2420', lo: '#120D0B', ink: '#EEE7DE', grain: true },
   green: { name: 'مكتبة خضراء', back: '#1F4A43', hi: '#9A7550', board: '#6B4A30', lo: '#3E2A1D', ink: '#EAF2EE', grain: true },
   white: { name: 'أبيض حديث', back: '#F3F4F2', hi: '#FFFFFF', board: '#DEE1DC', lo: '#B9BDB6', ink: '#1C2220', grain: false },
+  royal: { name: 'خشب مصقول', back: '#F6F1E6', hi: '#D9A86A', board: '#9A6431', lo: '#4E2F12', ink: '#2B1D10', grain: false, royal: true },
   classic: { name: 'مكتبة خشبية تقليدية', back: '#2E1B10', hi: '#B07A48', board: '#7A4A26', lo: '#2A170C', ink: '#F4E7D2', grain: false, classic: true },
   glass: { name: 'زجاج', back: '#E3EEEE', hi: 'rgba(255,255,255,.95)', board: 'rgba(186,212,211,.9)', lo: 'rgba(110,150,150,.75)', ink: '#1C2A28', grain: false },
 };
@@ -848,6 +858,7 @@ const SHELF_THEMES = {
 const T = (paper, surface, surface2, ink, muted, line, accent, accentSoft, onAccent, danger, page, chart2) =>
   ({ paper, surface, 'surface-2': surface2, ink, muted, line, accent, 'accent-soft': accentSoft, 'on-accent': onAccent, danger, page, 'chart-1': accent, 'chart-2': chart2 });
 const THEMES = [
+  { key: 'royal', name: 'المكتبة الرقمية', tone: 'light', c: { ...T('#F3F0E8', '#FFFFFF', '#EEE9DD', '#0E2350', '#4C5A78', '#DCD4C2', '#173E86', '#E2E9F6', '#FFFFFF', '#B3362F', '#FFFFFF', '#AFC1E3'), gold: '#D4AF5A', 'gold-hi': '#F4D98C', 'gold-lo': '#A57A28', navy: '#173E86', 'navy-deep': '#0B2257' } },
   { key: 'light', name: 'نعناع', tone: 'light', c: T('#ECEDE8', '#F9F9F6', '#F1F2EE', '#1C2220', '#5D6662', '#D3D6CF', '#1E6A64', '#D6E8E5', '#FFFFFF', '#B3362F', '#FFFFFF', '#A3C4BF') },
   { key: 'mist', name: 'ضباب', tone: 'light', c: T('#E8ECF1', '#F7F9FB', '#EEF2F6', '#1B2430', '#5A6574', '#D2D9E2', '#3A62A7', '#DCE5F4', '#FFFFFF', '#B3362F', '#FFFFFF', '#AFC3E3') },
   { key: 'sage', name: 'مريمية', tone: 'light', c: T('#E6EBE2', '#F6F8F3', '#EDF1E8', '#1F2A1F', '#5D6A5B', '#CFD8C9', '#44692F', '#DCE7D2', '#FFFFFF', '#A9452F', '#FFFFFF', '#B5CDA6') },
@@ -867,7 +878,7 @@ function shelfVars(key) {
   const t = SHELF_THEMES[key] || SHELF_THEMES.walnut;
   return `--sh-back:${t.back};--sh-hi:${t.hi};--sh-board:${t.board};--sh-lo:${t.lo};--sh-ink:${t.ink};--sh-grain:${t.grain ? 'var(--grain)' : 'none'}`;
 }
-const shelfCls = (key) => SHELF_THEMES[key]?.classic ? ' classic' : '';
+const shelfCls = (key) => SHELF_THEMES[key]?.classic ? ' classic' : SHELF_THEMES[key]?.royal ? ' royal-shelf' : '';
 // Procedural wood grain for the classic bookcase: drawn once, exposed as --wood-h / --wood-v.
 function woodTexture() {
   const W = 512, H = 256, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
@@ -975,6 +986,65 @@ function tagBar(scope) {
     sel.size ? el('button', { class: 'btn ghost tb-clear', onclick: () => { S.settings.tagFilter = []; saveSettings(); renderLibrary(); } }, 'إلغاء التصفية') : null,
     el('label', { class: 'tb-sort' }, el('span', { class: 'muted' }, 'الترتيب:'), sort));
 }
+// ---------- «المكتبة الرقمية»: الشعار ورسم الواجهة ----------
+const isRoyal = () => document.documentElement.dataset.skin === 'royal';
+/** الشعار: كتاب مفتوح ذهبي، مرسوم لا صورة. */
+function goldBook(cls) {
+  const d = el('span', { class: 'gold-book ' + (cls || ''), 'aria-hidden': 'true' });
+  d.innerHTML = `<svg viewBox="0 0 120 84"><defs><linearGradient id="gbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F7DE96"/><stop offset=".55" stop-color="#D4AF5A"/><stop offset="1" stop-color="#9C7224"/></linearGradient></defs>
+    <g fill="url(#gbg)" stroke="#8A6420" stroke-width="1.2" stroke-linejoin="round">
+      <path d="M60 78 C48 70 26 66 6 70 L6 18 C26 14 48 18 60 28 Z"/><path d="M60 78 C72 70 94 66 114 70 L114 18 C94 14 72 18 60 28 Z"/>
+      <path d="M60 72 C50 62 32 58 14 60 L14 10 C32 8 50 14 60 24 Z" opacity=".92"/><path d="M60 72 C70 62 88 58 106 60 L106 10 C88 8 70 14 60 24 Z" opacity=".92"/>
+      <path d="M60 66 C52 54 40 49 24 49 L24 3 C40 3 52 10 60 20 Z" opacity=".85"/><path d="M60 66 C68 54 80 49 96 49 L96 3 C80 3 68 10 60 20 Z" opacity=".85"/></g>
+    <path d="M60 20 L60 78" stroke="#7A5418" stroke-width="2"/></svg>`;
+  return d;
+}
+let heroSvg = '';
+/** خلفية الرأس: رفوف كتب باهتة خلف العنوان، وكرة أرضية زرقاء تتصل نقاطها بخطوط مضيئة، وموجة تفصلها عن المحتوى. */
+function heroArt() {
+  if (heroSvg) return heroSvg;
+  let seed = 11; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  let shelves = '';
+  for (const y of [14, 84, 154]) {
+    let x = 560;
+    while (x < 1200) { const w = 9 + rnd() * 16, h = 46 + rnd() * 18, c = ['#7E98C8', '#9DB1D6', '#5F7DB6', '#B7C6E2', '#6C86BC'][Math.floor(rnd() * 5)]; shelves += `<rect x="${x.toFixed(1)}" y="${(y + 62 - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="${c}"/>`; x += w + 1.5 + (rnd() < .08 ? 14 : 0); }
+    shelves += `<rect x="550" y="${y + 62}" width="650" height="6" fill="#8FA4CC"/>`;
+  }
+  // الكرة: نقاط على سطحها تُسقط على الشاشة، وتُوصل الجارة منها
+  const cx = 330, cy = 196, r = 168, pts = [];
+  for (let i = 0; i < 70; i++) {
+    const lat = Math.asin(2 * rnd() - 1), lon = rnd() * Math.PI * 2, x = Math.cos(lat) * Math.sin(lon), z = Math.cos(lat) * Math.cos(lon);
+    if (z > 0.05) pts.push([cx + r * x, cy - r * Math.sin(lat), z]);
+  }
+  let links = '';
+  pts.forEach((a, i) => pts.slice(i + 1).forEach((b) => { const d = Math.hypot(a[0] - b[0], a[1] - b[1]); if (d < 70) links += `<line x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}" stroke-opacity="${(0.55 - d / 160).toFixed(2)}"/>`; }));
+  const nodes = pts.map(([x, y, z], i) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(1.2 + z * 2.2).toFixed(1)}" fill="${i % 5 ? '#FFFFFF' : '#F4D98C'}" opacity="${(0.5 + z * 0.5).toFixed(2)}"/>`).join('');
+  let grid = '';
+  for (let k = -3; k <= 3; k++) grid += `<ellipse cx="${cx}" cy="${cy}" rx="${Math.abs(Math.cos((k * Math.PI) / 8) * r).toFixed(1)}" ry="${r}" />`;
+  for (let k = -3; k <= 3; k++) { const yy = cy - Math.sin((k * Math.PI) / 8) * r, rx = Math.cos((k * Math.PI) / 8) * r; grid += `<ellipse cx="${cx}" cy="${yy.toFixed(1)}" rx="${rx.toFixed(1)}" ry="${(rx * 0.16).toFixed(1)}" />`; }
+  heroSvg = `<svg viewBox="0 0 1200 240" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+<defs>
+<linearGradient id="hsky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#C9D8EF"/><stop offset=".6" stop-color="#E4EAF4"/><stop offset="1" stop-color="#F3F0E8"/></linearGradient>
+<radialGradient id="hglobe" cx=".38" cy=".3" r=".75"><stop offset="0" stop-color="#5E90DE"/><stop offset=".55" stop-color="#2353A6"/><stop offset="1" stop-color="#0B2257"/></radialGradient>
+<radialGradient id="hhalo"><stop offset=".72" stop-color="#9DC0FF" stop-opacity=".55"/><stop offset="1" stop-color="#9DC0FF" stop-opacity="0"/></radialGradient>
+<linearGradient id="hfade" x1="1" y1="0" x2="0" y2="0"><stop offset="0" stop-color="#F3F0E8" stop-opacity=".92"/><stop offset=".32" stop-color="#F3F0E8" stop-opacity=".55"/><stop offset=".55" stop-color="#F3F0E8" stop-opacity="0"/></linearGradient>
+<filter id="hsoft"><feGaussianBlur stdDeviation="1.8"/></filter>
+<linearGradient id="hgold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#D4AF5A" stop-opacity="0"/><stop offset=".3" stop-color="#E9C771"/><stop offset=".7" stop-color="#D4AF5A"/><stop offset="1" stop-color="#D4AF5A" stop-opacity="0"/></linearGradient>
+</defs>
+<rect width="1200" height="240" fill="url(#hsky)"/>
+<g opacity=".5" filter="url(#hsoft)">${shelves}</g>
+<circle cx="${cx}" cy="${cy}" r="${r + 26}" fill="url(#hhalo)"/>
+<circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#hglobe)"/>
+<g fill="none" stroke="#BFD6FF" stroke-opacity=".28" stroke-width="1">${grid}</g>
+<g stroke="#E8F0FF" stroke-width="1">${links}</g>${nodes}
+<path d="M170 96 C 260 40 420 40 520 110" fill="none" stroke="#F4D98C" stroke-opacity=".6" stroke-width="1.4"/>
+<path d="M120 150 C 230 90 400 80 560 160" fill="none" stroke="#FFFFFF" stroke-opacity=".35" stroke-width="1"/>
+<rect width="1200" height="240" fill="url(#hfade)"/>
+<path d="M0 214 C 220 246 470 190 720 212 S 1060 236 1200 204 L1200 240 L0 240 Z" fill="#F3F0E8"/>
+<path d="M0 214 C 220 246 470 190 720 212 S 1060 236 1200 204" fill="none" stroke="url(#hgold)" stroke-width="2"/>
+</svg>`;
+  return heroSvg;
+}
 function renderLibrary() {
   if (S.settings.shelf !== 'all' && !currentShelf()) S.settings.shelf = 'all';
   const shelf = currentShelf();
@@ -983,7 +1053,10 @@ function renderLibrary() {
   const onShelf = (shelf ? S.books.filter((b) => b.shelf === shelf.id) : S.books).slice().sort(cmp);
   // وسوم التصفية غير الموجودة في هذا الرف لا تُطبَّق عليه
   const known = new Set(allTags(onShelf).map(([t]) => t)), want = (S.settings.tagFilter || []).filter((t) => known.has(t));
-  const books = want.length ? onShelf.filter((b) => want.every((t) => bookTags(b).includes(t))) : onShelf;
+  const tagged = want.length ? onShelf.filter((b) => want.every((t) => bookTags(b).includes(t))) : onShelf;
+  // البحث في الكتب: العنوان، والعنوان الكامل والمؤلفون من بيانات الكتاب، والوسوم
+  const q = (S.libQuery || '').trim().toLowerCase();
+  const books = q ? tagged.filter((b) => [b.title, b.meta?.title, ...(b.meta?.creators || []).map((c) => c.name), ...bookTags(b)].some((t) => (t || '').toLowerCase().includes(q))) : tagged;
 
   const chip = (id, name, n, theme) => el('button', { class: 'shelf-chip', role: 'tab', 'aria-selected': String(S.settings.shelf === id), onclick: () => selectShelf(id) },
     el('i', { class: 'sw' + shelfCls(theme), style: shelfVars(theme) }), name, el('span', { class: 'n num' }, fmt(n)));
@@ -1000,9 +1073,11 @@ function renderLibrary() {
     tabs.append(el('button', { class: 'shelf-chip add', onclick: () => { addingShelf = true; renderLibrary(); } }, icon('plus'), 'رف جديد'));
   }
 
+  const subText = q ? `${bookCount(books.length)} تطابق «${S.libQuery.trim()}»` : want.length ? `${bookCount(books.length)} بالوسم ${want.map((t) => `«${t}»`).join(' و')}` : `${bookCount(books.length)} على ${shelf ? 'هذا الرف' : 'الرفوف'}`;
+  const royal = isRoyal();
   // رأس المكتبة ثابت أعلى الشاشة: يختفي عند النزول بين الكتب، ويعود فور الصعود ولو قليلًا
-  const top = el('div', { class: 'lib-top' }, el('div', { class: 'view-head' },
-      el('div', {}, el('h1', {}, shelf ? shelf.name : 'المكتبة'), el('div', { class: 'sub' }, want.length ? `${bookCount(books.length)} بالوسم ${want.map((t) => `«${t}»`).join(' و')}` : `${bookCount(books.length)} على ${shelf ? 'هذا الرف' : 'الرفوف'}`)),
+  const top = royal ? royalHeader(shelf, subText, onShelf) : el('div', { class: 'lib-top' }, el('div', { class: 'view-head' },
+      el('div', {}, el('h1', {}, shelf ? shelf.name : 'المكتبة'), el('div', { class: 'sub' }, subText)),
       el('div', { class: 'row' },
         el('button', { class: 'btn', 'aria-pressed': String(S.customize), onclick: () => { S.customize = !S.customize; renderLibrary(); } }, icon('palette'), 'تخصيص'),
         el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, icon('upload'), 'إضافة ملف PDF'))),
@@ -1018,19 +1093,52 @@ function renderLibrary() {
           el('p', {}, want.length ? 'لا كتب تحمل كل هذه الوسوم معًا.' : shelf ? 'هذا الرف فارغ. أضف ملف PDF إليه، أو انقل كتابًا من قائمة ⋯ تحت غلافه.' : 'لا توجد كتب بعد.'),
           el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, 'إضافة ملف PDF')),
     el('div', { class: 'drop-hint' }, 'اسحب ملفات PDF إلى هنا، أو اخترها من تطبيق «الملفات» على iPad عبر زر «إضافة ملف PDF».'),
-  ));
+  ), royal ? el('footer', { class: 'lib-foot' },
+    el('div', { class: 'lf-brand' }, goldBook('lf-logo'), el('span', {}, 'المكتبة الرقمية … اكتشف، اقرأ، تعلّم')),
+    el('span', { class: 'lf-status', role: 'status' }, el('i'), el('span', {}, 'جاهز للاستخدام'))) : null);
   const keep = main.querySelector('.view')?.scrollTop || 0;
+  const focused = document.activeElement?.classList.contains('lib-search-in');
   main.replaceChildren(view); view.scrollTop = keep;
-  top.classList.toggle('stuck', keep > 8);
+  view.classList.toggle('royal-view', royal);
+  if (focused) { const si = view.querySelector('.lib-search-in'); si?.focus(); si?.setSelectionRange(si.value.length, si.value.length); }
+  updateLibStatus();
+  // الرأس الكبير يُطوى عند التمرير؛ ويُحجز مكانه الأصلي حتى لا يقصر المحتوى فيقفز موضع التمرير
+  const fullH = top.offsetHeight;
+  const setStuck = (on) => {
+    top.classList.toggle('stuck', on);
+    if (royal) top.style.marginBottom = on ? `${Math.max(0, fullH - top.offsetHeight)}px` : '';
+  };
+  setStuck(keep > 8);
   let lastY = view.scrollTop;
   view.addEventListener('scroll', () => {
     const y = view.scrollTop, dy = y - lastY;
     if (Math.abs(dy) < 4) return;
-    top.classList.toggle('hide', dy > 0 && y > top.offsetHeight + 40);
-    top.classList.toggle('stuck', y > 8);
+    top.classList.toggle('hide', dy > 0 && y > fullH + 40);
+    if ((y > 8) !== top.classList.contains('stuck')) setStuck(y > 8);
     lastY = y;
   }, { passive: true });
   renderRailShelves();
+}
+/** رأس «المكتبة الرقمية»: الشعار والعنوان والبحث على خلفية مرسومة، والأزرار والترتيب في جهتها الأخرى. */
+function royalHeader(shelf, subText, onShelf) {
+  const art = el('div', { class: 'hero-art' }); art.innerHTML = heroArt();
+  const search = el('input', { class: 'lib-search-in', type: 'search', placeholder: 'ابحث في مكتبتك الرقمية…', 'aria-label': 'بحث في الكتب: العنوان أو المؤلف أو الوسم', value: S.libQuery || '', enterkeyhint: 'search' });
+  search.addEventListener('input', debounce(() => { S.libQuery = search.value; renderLibrary(); }, 220));
+  const sort = el('select', { class: 'sort-sel hero-sort', 'aria-label': 'ترتيب الكتب', onchange: (e) => { S.settings.sortBy = e.target.value; saveSettings(); renderLibrary(); } },
+    ...SORTS.map(([k, l]) => el('option', { value: k, selected: (S.settings.sortBy || 'recent') === k }, l)));
+  return el('div', { class: 'lib-top royal-top' },
+    el('div', { class: 'hero' }, art,
+      el('div', { class: 'hero-main' },
+        el('div', { class: 'hero-brand' }, goldBook('hero-logo'),
+          el('div', {}, el('h1', {}, 'المكتبة الرقمية'), el('p', { class: 'hero-tag' }, 'معرفة بلا حدود… في متناول يدك'))),
+        el('label', { class: 'hero-search' }, search, icon('zoom'))),
+      el('div', { class: 'hero-side' },
+        el('div', { class: 'row' },
+          el('button', { class: 'btn hero-btn', 'aria-pressed': String(S.customize), onclick: () => { S.customize = !S.customize; renderLibrary(); } }, icon('palette'), 'تخصيص'),
+          el('button', { class: 'btn primary hero-add', onclick: () => $('#fileIn').click() }, icon('upload'), 'إضافة ملف PDF')),
+        el('label', { class: 'hero-sort-l' }, el('span', {}, 'الترتيب:'), sort))),
+    el('div', { class: 'royal-sub' }, el('b', {}, shelf ? shelf.name : 'كل الكتب'), el('span', {}, subText)),
+    S.books.length ? tagBar(onShelf) : null);
 }
 function customizePanel(shelf, themeKey) {
   const setTheme = (k) => {
@@ -3653,6 +3761,9 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.cla
     pg.strokes = ink || pg.strokes || [];
   })));
   if (settings) S.settings = { ...structuredClone(DEFAULTS), ...settings, pen: { ...DEFAULTS.pen, ...(settings.pen || {}) } };
+  $('#rail').append(goldBook('rail-orn')); // زخرفة أسفل الشريط في ثيم «المكتبة الرقمية»
+  // الواجهة الجديدة تُعتمد مرة واحدة، ثم يبقى اختيار الثيم للقارئ
+  if (!S.settings.royalAdopted) { S.settings.royalAdopted = true; S.settings.skin = 'royal'; if (!S.settings.allTheme || S.settings.allTheme === 'walnut') S.settings.allTheme = 'royal'; saveSettings(); }
   applySkin();
   woodTexture();
   inkDiag.on = !!S.settings.inkDiag;
