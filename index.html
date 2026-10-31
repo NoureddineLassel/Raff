@@ -813,35 +813,41 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 .gold-book { display: inline-block; line-height: 0; flex: none; }
 .gold-book svg { width: 100%; height: auto; display: block; filter: drop-shadow(0 2px 3px rgba(80, 50, 0, .35)); }
 :root[data-skin="royal"] body { background: var(--paper); }
-/* الشريط الجانبي: فاتح، والرفوف أقراص ملوّنة بأيقونة في دائرة، والرف المختار كحلي، والأقسام صفوف بأيقونة */
-:root[data-skin="royal"] { --rail: 176px; }
-:root[data-skin="royal"] #rail { position: relative; overflow: hidden; background: var(--surface); border-inline-end: 1px solid var(--line); padding: 16px 0 0; gap: 2px;
-  box-shadow: -6px 0 22px -16px rgba(11, 34, 87, .4); }
-:root[data-skin="royal"] #rail::after { content: ""; position: absolute; inset: auto -40px -70px -40px; height: 120px; border-radius: 50% 50% 0 0 / 70% 70% 0 0;
-  background: linear-gradient(180deg, #1D4592, #0B2257); pointer-events: none; }
-:root[data-skin="royal"] .brand { color: var(--navy-deep); text-align: start; padding: 4px 22px 12px; font-size: 30px; }
-:root[data-skin="royal"] .rail-btn { flex-direction: row; justify-content: flex-start; gap: 12px; margin: 1px 10px; padding: 10px 12px; font-size: 15px; font-weight: 600; color: var(--ink); border-radius: 12px; }
-:root[data-skin="royal"] .rail-btn .icon { width: 22px; height: 22px; color: var(--navy); }
-:root[data-skin="royal"] .rail-btn:hover { background: var(--surface-2); }
-:root[data-skin="royal"] .rail-btn[aria-current="page"] { background: #E5ECF8; color: var(--navy-deep); }
-/* المكتبة لوح صغير كما في التصميم: الأيقونة فوق الاسم */
-:root[data-skin="royal"] .rail-btn[data-view="library"] { flex-direction: column; gap: 4px; margin: 0 12px 8px; padding: 12px 8px; border-radius: 14px; background: #E5ECF8; color: var(--navy-deep); font-size: 14px; }
-:root[data-skin="royal"] .rail-shelves { margin: 0 10px 8px; padding: 2px 0 10px; gap: 7px; border-top: 0; border-bottom: 1px solid var(--line); }
-:root[data-skin="royal"] .rail-shelf { flex-direction: row; justify-content: space-between; gap: 8px; min-height: 44px; padding: 5px 14px 5px 6px; border-radius: 999px; border: 0;
-  font-size: 14px; font-weight: 700; color: var(--ink); color: rgb(from rgb(var(--g)) calc(r * .55) calc(g * .55) calc(b * .55)); background: rgb(var(--g) / .14); box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
-:root[data-skin="royal"] .rail-shelf .rs-name { -webkit-line-clamp: 1; text-align: start; flex: 1; }
-:root[data-skin="royal"] .rs-ic { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: rgb(var(--g) / .26); color: var(--navy); color: rgb(from rgb(var(--g)) calc(r * .6) calc(g * .6) calc(b * .6)); }
-:root[data-skin="royal"] .rs-ic .icon { width: 18px; height: 18px; }
+/* الشريط الجانبي في كل الثيمات: الرفوف أقراص ملوّنة بأيقونة في دائرة، والرف المختار بلون الثيم، والأقسام صفوف بأيقونة.
+   الألوان مشتقة من رموز كل ثيم (accent وink وsurface)، وثيم «المكتبة الرقمية» يضبط درجاته الخاصة بعدها. */
+:root[data-skin] { --rail: 176px; --rail-hi: var(--accent-soft); --rail-ink: var(--accent);
+  --rail-sel: linear-gradient(180deg, color-mix(in srgb, var(--accent) 86%, #fff), color-mix(in srgb, var(--accent) 82%, #000));
+  --rail-curve: linear-gradient(180deg, color-mix(in srgb, var(--accent) 90%, #fff), color-mix(in srgb, var(--accent) 70%, #000)); }
+:root[data-skin][data-tone="dark"] { --rail-curve: linear-gradient(180deg, color-mix(in srgb, var(--accent) 45%, var(--surface)), color-mix(in srgb, var(--accent) 22%, var(--paper))); }
+:root[data-skin="royal"] { --rail-hi: #E5ECF8; --rail-ink: var(--navy-deep); --rail-sel: linear-gradient(180deg, #1F4C9E, #0E2A68); --rail-curve: linear-gradient(180deg, #1D4592, #0B2257); }
+:root[data-skin] #rail { position: relative; overflow: hidden; background: var(--surface); border-inline-end: 1px solid var(--line); padding: 16px 0 0; gap: 2px;
+  box-shadow: -6px 0 22px -16px rgb(0 0 0 / .35); }
+:root[data-skin] #rail::after { content: ""; position: absolute; inset: auto -40px -70px -40px; height: 120px; border-radius: 50% 50% 0 0 / 70% 70% 0 0;
+  background: var(--rail-curve); pointer-events: none; }
+:root[data-skin] .brand { color: var(--rail-ink); text-align: start; padding: 4px 22px 12px; font-size: 30px; }
+:root[data-skin] .rail-btn { flex-direction: row; justify-content: flex-start; gap: 12px; margin: 1px 10px; padding: 10px 12px; font-size: 15px; font-weight: 600; color: var(--ink); border-radius: 12px; }
+:root[data-skin] .rail-btn .icon { width: 22px; height: 22px; color: var(--accent); }
+:root[data-skin] .rail-btn:hover { background: var(--surface-2); }
+:root[data-skin] .rail-btn[aria-current="page"] { background: var(--rail-hi); color: var(--rail-ink); }
+/* المكتبة لوح صغير: الأيقونة فوق الاسم */
+:root[data-skin] .rail-btn[data-view="library"] { flex-direction: column; gap: 4px; margin: 0 12px 8px; padding: 12px 8px; border-radius: 14px; background: var(--rail-hi); color: var(--rail-ink); font-size: 14px; }
+:root[data-skin] .rail-shelves { margin: 0 10px 8px; padding: 2px 0 10px; gap: 7px; border-top: 0; border-bottom: 1px solid var(--line); }
+:root[data-skin] .rail-shelf { flex-direction: row; justify-content: space-between; gap: 8px; min-height: 44px; padding: 5px 14px 5px 6px; border-radius: 999px; border: 0;
+  font-size: 14px; font-weight: 700; color: var(--ink); color: color-mix(in srgb, rgb(var(--g)) 40%, var(--ink)); background: rgb(var(--g) / .14); box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-skin][data-tone="dark"] .rail-shelf { background: rgb(var(--g) / .2); }
+:root[data-skin] .rail-shelf .rs-name { -webkit-line-clamp: 1; text-align: start; flex: 1; }
+:root[data-skin] .rs-ic { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: rgb(var(--g) / .26); color: var(--accent); color: color-mix(in srgb, rgb(var(--g)) 55%, var(--ink)); }
+:root[data-skin][data-tone="dark"] .rs-ic { background: rgb(var(--g) / .34); }
+:root[data-skin] .rs-ic .icon { width: 18px; height: 18px; }
 .rs-letter { font: 800 15px/1 var(--font-ui); }
-:root[data-skin="royal"] .rail-shelf[aria-selected="true"] { background: linear-gradient(180deg, #1F4C9E, #0E2A68); color: #fff; box-shadow: 0 6px 14px -6px rgba(11, 34, 87, .6); }
-:root[data-skin="royal"] .rail-shelf[aria-selected="true"] .rs-ic { background: rgba(255, 255, 255, .18); color: #fff; }
-:root[data-skin="royal"] .rail-shelf.add { justify-content: center; padding-inline: 10px; color: var(--muted); background: none; border: 1px dashed var(--line); font-weight: 500; }
-:root[data-skin="royal"] .rs-input { border-radius: 999px; padding-inline: 14px; }
-:root[data-skin="royal"] .save-state { display: flex; align-items: center; gap: 6px; padding: 8px 16px 72px; font-size: 12px; text-align: start; color: var(--muted); }
-:root[data-skin="royal"] .save-state::before { content: ""; flex: none; width: 16px; height: 16px; background: currentColor;
+:root[data-skin] .rail-shelf[aria-selected="true"] { background: var(--rail-sel); color: var(--on-accent); box-shadow: 0 6px 14px -6px rgb(0 0 0 / .45); }
+:root[data-skin] .rail-shelf[aria-selected="true"] .rs-ic { background: color-mix(in srgb, var(--on-accent) 18%, transparent); color: var(--on-accent); }
+:root[data-skin] .rail-shelf.add { justify-content: center; padding-inline: 10px; color: var(--muted); background: none; border: 1px dashed var(--line); font-weight: 500; }
+:root[data-skin] .rs-input { border-radius: 999px; padding-inline: 14px; }
+:root[data-skin] .save-state { display: flex; align-items: center; gap: 6px; padding: 8px 16px 72px; font-size: 12px; text-align: start; color: var(--muted); }
+:root[data-skin] .save-state::before { content: ""; flex: none; width: 16px; height: 16px; background: currentColor;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E") center / contain no-repeat; }
-.rs-ic { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .icon-pick { display: flex; flex-wrap: wrap; gap: 6px; }
 .icon-pick button { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
@@ -910,11 +916,11 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
     .royal-sub, .royal-top .tag-bar { padding-inline: 18px; }
     .royal-top.stuck .hero-main { grid-auto-flow: row; }
   .royal-top.stuck .hero-search, .royal-top.stuck .hero-side { display: none; }
-  :root[data-skin="royal"] #rail { border-radius: 0; padding: 4px 8px; }
-  :root[data-skin="royal"] #rail::after { display: none; }
-  :root[data-skin="royal"] .save-state { display: none; }
-  :root[data-skin="royal"] .rail-btn, :root[data-skin="royal"] .rail-btn[data-view="library"] { flex-direction: column; gap: 3px; margin: 0; padding: 6px 4px; font-size: 12px; background: none; }
-  :root[data-skin="royal"] .rail-btn[aria-current="page"] { background: #E5ECF8; }
+  :root[data-skin] #rail { border-radius: 0; padding: 4px 8px; }
+  :root[data-skin] #rail::after { display: none; }
+  :root[data-skin] .save-state { display: none; }
+  :root[data-skin] .rail-btn, :root[data-skin] .rail-btn[data-view="library"] { flex-direction: column; gap: 3px; margin: 0; padding: 6px 4px; font-size: 12px; background: none; }
+  :root[data-skin] .rail-btn[aria-current="page"] { background: var(--rail-hi); }
 }
 </style>
 
