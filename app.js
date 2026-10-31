@@ -63,7 +63,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v28'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v29'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1673,7 +1673,21 @@ function afterPageChange() {
   const pages = spreadPages(R.page);
   seenTimer = setTimeout(() => pages.forEach(markSeen), 1500);
 }
+/**
+ * شبكة أمان للتقليب: إن بقي التقليب «جاريًا» دون أي نشاط (صفحة تعذّر رسمها، أو لمسة ضاع نهايتها،
+ * أو خرج القارئ من التطبيق في منتصف القلب) يُلغى ويُعاد عرض الصفحات، بدل أن يتوقف التقليب نهائيًا.
+ */
+function unstickTurn(force) {
+  if (!R.turning || (!force && performance.now() - (R.turnT || 0) < 2500)) return false;
+  console.warn('page turn was stuck; resetting');
+  document.querySelectorAll('.curl-canvas').forEach((c) => c.remove());
+  R.turning = false; R.els?.stage.classList.remove('dragging');
+  if (R.book && R.size) showSpread(R.page).catch(() => {});
+  return true;
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) unstickTurn(); });
 async function goto(n, dir = 0) {
+  if (R.turning) unstickTurn();
   if (!R.book || R.turning || !R.size) return;
   const start = spreadStart(Math.max(1, Math.min(R.book.pages, n)));
   if (start === R.page && R.slots[0]?.page === start) return;
@@ -1801,7 +1815,11 @@ async function beginTurn(dir, opts = {}) {
   if (R.turning || !R.size) return null;
   const from = R.page, to = from + dir * stepSize();
   if (to < 1 || to > R.book.pages) return null;
-  R.turning = true;
+  R.turning = true; R.turnT = performance.now();
+  try { return await prepareTurn(dir, opts, from, to); }
+  catch (e) { console.warn('turn failed', e); unstickTurn(true); return null; }
+}
+async function prepareTurn(dir, opts, from, to) {
   const { vw: w, vh: h, cols } = R.size; // الورقة المقلوبة بحجمها الظاهر
   let leafOpts, underSlot, underPage, finishSlot, finishPage, restorePage, reverse = false;
   if (cols === 2) {
@@ -1830,14 +1848,21 @@ async function beginTurn(dir, opts = {}) {
   const top = opts.clientY != null && opts.clientY - R.els.bookEl.getBoundingClientRect().top < h / 2;
   const curl = makeCurl({ w, h, ...leafOpts, corner: top ? 'top' : 'bottom' });
   let cur = 0, byFinger = false;
-  const set = (p) => { cur = p; byFinger = false; curl.set(reverse ? 1 - p : p); };
+  const set = (p) => { R.turnT = performance.now(); cur = p; byFinger = false; curl.set(reverse ? 1 - p : p); };
   set(0);
   R.els.stage.append(curl.el);
   if (underSlot) await fillSlot(underSlot, underPage);
   return {
     set,
-    drag: reverse ? null : (dx, dy) => { byFinger = true; return curl.drag(dx, dy); },
+    drag: reverse ? null : (dx, dy) => { R.turnT = performance.now(); byFinger = true; return curl.drag(dx, dy); },
     async finish(complete, ms) {
+      try { await finishTurn(complete, ms); }
+      catch (e) { console.warn('turn finish failed', e); if (R.book && R.size) showSpread(R.page).catch(() => {}); }
+      finally { curl.el.remove(); R.turning = false; }
+    },
+  };
+  async function finishTurn(complete, ms) {
+      R.turnT = performance.now() + 2000; // الحركة نفسها لا تُعدّ تعطّلًا
       if (byFinger) {
         const P0 = curl.P, T = complete ? [2 * curl.xs - curl.cx, curl.cy] : [curl.cx, curl.cy];
         const dist = Math.hypot(T[0] - P0[0], T[1] - P0[1]) / (2 * w);
@@ -1853,26 +1878,30 @@ async function beginTurn(dir, opts = {}) {
       } else if (underSlot) {
         await fillSlot(underSlot, restorePage);
       }
-      curl.el.remove();
-      R.turning = false;
-    },
-  };
+  }
 }
 /** سحب الصفحة بالإصبع: الورقة تتبع الإصبع، وتكتمل أو ترجع حسب المسافة والسرعة. */
 function setupDrag(E) {
-  let st = null, suppressClick = false;
+  let st = null, suppressClick = false, recovering = null;
   const fingers = new Set();
   E.stage.addEventListener('click', (e) => { if (suppressClick) { e.stopPropagation(); e.preventDefault(); suppressClick = false; } }, true);
   const lift = (e) => fingers.delete(e.pointerId);
   E.stage.addEventListener('pointerup', lift, true); E.stage.addEventListener('pointercancel', lift, true);
   E.stage.addEventListener('pointerdown', (e) => {
+    // لمسة جديدة (الإصبع الأول) تبدأ العدّ من الصفر: إصبع ضاع رفعه سابقًا لا يجعل كل لمسة «تكبيرًا»
+    if (e.isPrimary) {
+      fingers.clear();
+      // سحبة سابقة لم تصل نهايتها: تُطوى ورقتها وتُنهى قبل بدء اللمسة الجديدة
+      if (st && st.id !== e.pointerId) { const old = st; st = null; E.stage.classList.remove('dragging'); recovering = (old.pending || Promise.resolve()).then((t) => t?.finish(false, 1)).catch(() => {}).finally(() => { recovering = null; }); }
+    }
     if (e.pointerType === 'touch') fingers.add(e.pointerId);
+    if (R.turning && !st) unstickTurn();
     // إصبعان: تكبير، لا تقليب
     if (fingers.size > 1) {
       if (st) { const s = st; st = null; E.stage.classList.remove('dragging'); s.pending?.then((t) => t?.finish(false)); }
       return;
     }
-    if (R.turning || e.button > 0 || e.pointerType === 'pen') return;
+    if ((R.turning && !recovering) || e.button > 0 || e.pointerType === 'pen') return;
     if (R.pen && !(e.pointerType === 'touch' && S.settings.penOnly)) return;
     if (e.target.closest('.pen-bar, .thumbs')) return;
     const sel = getSelection();
@@ -1894,7 +1923,7 @@ function setupDrag(E) {
       // سحب الصفحة يقلبها ولا يحدّد نصها
       getSelection().removeAllRanges(); E.stage.classList.add('dragging');
       try { E.stage.setPointerCapture(e.pointerId); } catch {}
-      if (!reducedMotion() && (S.settings.turnAnim || 'curl') === 'curl') st.pending = beginTurn(st.dir, { clientY: st.y });
+      if (!reducedMotion() && (S.settings.turnAnim || 'curl') === 'curl') { const d = st.dir, y = st.y; st.pending = (recovering || Promise.resolve()).then(() => beginTurn(d, { clientY: y })); }
     }
     if (st.pending && !st.turn) { st.turn = await st.pending; if (!st) return; }
     if (st?.turn) {
@@ -1915,11 +1944,19 @@ function setupDrag(E) {
       return;
     }
     const dx = e.clientX - s.x, dy = e.clientY - s.y;
-    if (s.dir && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) goto(R.page + s.dir * stepSize(), s.dir);
+    if (s.dir && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) {
+      // تقليب سابق ما زال يُغلق (طيّ ورقة معلّقة مثلًا): تنتظر السحبة لحظة بدل أن تضيع
+      for (let i = 0; i < 40 && R.turning; i++) await new Promise((r) => setTimeout(r, 30));
+      goto(R.page + s.dir * stepSize(), s.dir);
+    }
     else if (!s.dir && e.type === 'pointerup' && Math.hypot(dx, dy) < 10 && performance.now() - s.t0 < 450) handleTap(e);
   };
   E.stage.addEventListener('pointerup', end);
   E.stage.addEventListener('pointercancel', end);
+  // إن ضاع التقاط الإصبع (إيماءة من النظام مثلًا) تُنهى السحبة بدل أن تبقى معلّقة
+  E.stage.addEventListener('lostpointercapture', (e) => { if (st && e.target === E.stage && e.pointerId === st.id) end(e); });
+  addEventListener('pointerup', (e) => fingers.delete(e.pointerId), true);
+  addEventListener('pointercancel', (e) => fingers.delete(e.pointerId), true);
 }
 
 function handleTap(e) {
