@@ -48,6 +48,7 @@ const ICONS = {
   pin: 'M9 4h6M10 4v6l-3 4h10l-3-4V4M12 14v7',
   autohide: 'M4 4h6v16H4zM14 12h7M17 9l-3 3 3 3',
   float: 'M3 8h12v12H3zM9 4h12v12M3 11h12',
+  info: 'M12 3a9 9 0 100 18 9 9 0 100-18zM12 11v6M12 7.5h.01',
   zoom: 'M10.5 4a6.5 6.5 0 100 13 6.5 6.5 0 100-13zM15.5 15.5L21 21M8 10.5h5M10.5 8v5',
 };
 function icon(name, extra) {
@@ -62,7 +63,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v25'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v26'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1075,6 +1076,7 @@ function toggleMenu(card, b) {
     el('div', { class: 'muted', style: 'padding:6px 12px;font-size:13px' }, `${fmt(b.pages)} صفحة · ${Math.round((b.secs || 0) / 60)} دقيقة قراءة`),
     el('button', { role: 'menuitem', onclick: () => rename() }, icon('pen'), 'إعادة التسمية'),
     el('button', { role: 'menuitem', onclick: () => moveMenu() }, icon('thumbs'), 'نقل إلى رف'),
+    el('button', { role: 'menuitem', onclick: () => openMetaSheet(b) }, icon('info'), 'بيانات الكتاب وZotero'),
     el('button', { role: 'menuitem', onclick: () => tagMenu() }, icon('tag'), bookTags(b).length ? `الوسوم (${fmt(bookTags(b).length)})` : 'إضافة وسوم'),
     el('button', { role: 'menuitem', onclick: () => { b.dir = b.dir === 'ltr' ? 'rtl' : 'ltr'; Store.put('books', b.id, b); closeMenu(); toast(b.dir === 'ltr' ? `«${b.title}»: التصفح من اليسار إلى اليمين.` : `«${b.title}»: التصفح من اليمين إلى اليسار.`); } },
       el('span', { class: 'dir-label', style: 'width:22px;text-align:center' }, b.dir === 'ltr' ? 'A→' : '←ع'),
@@ -1260,11 +1262,12 @@ function buildReader() {
   E.thBtn = el('button', { class: 'icon-btn', title: 'الصفحات', 'aria-label': 'الصفحات', onclick: () => setThumbs(!R.thumbs) }, icon('thumbs'));
   E.dirBtn = el('button', { class: 'icon-btn dir-btn', title: 'اتجاه التصفح', 'aria-label': 'اتجاه التصفح', onclick: toggleDir }, el('span', { class: 'dir-label' }));
   E.drawerBtn = el('button', { class: 'icon-btn', title: 'العلامات والملاحظات', 'aria-label': 'العلامات والملاحظات', onclick: () => setDrawer(!R.drawer) }, icon('list'));
+  E.metaBtn = el('button', { class: 'icon-btn', title: 'بيانات الكتاب وZotero', 'aria-label': 'بيانات الكتاب', onclick: () => openMetaSheet(R.book) }, icon('info'));
   E.autoTrBtn = el('button', { class: 'icon-btn', title: 'الترجمة الآلية للنص المحدد', 'aria-label': 'الترجمة الآلية', 'aria-pressed': String(!!S.settings.autoTranslate), onclick: () => setAutoTranslate(!S.settings.autoTranslate) }, icon('translate'));
   E.sizeBtn = el('button', { class: 'icon-btn', title: 'حجم الصفحة', 'aria-label': 'حجم الصفحة', 'aria-haspopup': 'dialog', onclick: () => toggleSizePop() }, icon('zoom'));
   const top = el('div', { class: 'r-top' },
     el('button', { class: 'icon-btn', 'aria-label': 'العودة إلى المكتبة', title: 'المكتبة', onclick: closeReader }, icon('back')),
-    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo, E.dirBtn, E.autoTrBtn, E.sizeBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
+    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo, E.metaBtn, E.dirBtn, E.autoTrBtn, E.sizeBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
   E.bookEl = el('div', { class: 'book-view' });
   E.tapNext = el('button', { class: 'tap-zone next', 'aria-label': 'الصفحة التالية', onclick: () => goto(R.page + stepSize(), 1) });
   E.tapPrev = el('button', { class: 'tap-zone prev', 'aria-label': 'الصفحة السابقة', onclick: () => goto(R.page - stepSize(), -1) });
@@ -3199,7 +3202,7 @@ function translationSettings() {
       el('div', { style: 'margin-top:12px;font-size:14px' }, 'الترجمة الآلية للنص المحدد (أو من زر الترجمة في شريط القارئ):'), auto));
 }
 async function exportBackup() {
-  const dump = { app: 'raff', version: 1, at: new Date().toISOString(), settings: { ...S.settings, claudeKey: '', deeplKey: '' }, books: S.books, shelves: S.shelves, notes: S.notes, marks: S.marks, daily: Object.values(S.daily), ink: {}, ocr: {} };
+  const dump = { app: 'raff', version: 1, at: new Date().toISOString(), settings: { ...S.settings, claudeKey: '', deeplKey: '', zoteroKey: '' }, books: S.books, shelves: S.shelves, notes: S.notes, marks: S.marks, daily: Object.values(S.daily), ink: {}, ocr: {} };
   for (const s of ['ink', 'ocr']) for (const k of await Store.keys(s)) dump[s][k] = await Store.get(s, k);
   const data = JSON.stringify(dump);
   const dl = await cap('downloads');
@@ -3256,6 +3259,242 @@ async function migrateLocalToCloud() {
     await Cloud.put('books', b.id, b).catch(() => {});
   }
   return true;
+}
+
+// ---------- Book details and Zotero ----------
+// بيانات الكتاب (المؤلف، الناشر، التاريخ، الملخص…) تُحفظ مع الكتاب (b.meta)، وتُستخرج تلقائيًا
+// من بيانات ملف PDF ومن رقم ISBN أو DOI في صفحاته، ثم تُرسل إلى Zotero عبر واجهته البرمجية، أو تُصدَّر بصيغة RIS.
+const CREATOR_TYPES = [['author', 'مؤلف'], ['editor', 'محرّر'], ['translator', 'مترجم'], ['contributor', 'مساهم']];
+const META_FIELDS = [
+  ['publisher', 'دار النشر'], ['place', 'مكان النشر'], ['date', 'تاريخ النشر'], ['edition', 'الطبعة'],
+  ['isbn', 'ISBN', 'ltr'], ['doi', 'DOI', 'ltr'], ['numPages', 'عدد الصفحات', 'ltr'], ['language', 'اللغة', 'ltr'],
+  ['series', 'السلسلة'], ['url', 'الرابط', 'ltr'],
+];
+const bookMeta = (b) => (b.meta ||= { title: b.title, creators: [], language: b.dir === 'ltr' ? 'en' : 'ar' });
+const ISBN_RE = /(?:ISBN(?:-1[03])?[:\s]*)?((?:97[89][-\s]?)?(?:\d[-\s]?){9}[\dXx])/g;
+function findIsbn(text) {
+  for (const m of text.matchAll(ISBN_RE)) {
+    const d = m[1].replace(/[-\s]/g, '').toUpperCase();
+    if (d.length === 13 && /^97[89]\d{10}$/.test(d)) { let t = 0; for (let i = 0; i < 12; i++) t += +d[i] * (i % 2 ? 3 : 1); if ((10 - (t % 10)) % 10 === +d[12]) return d; }
+    if (d.length === 10 && /^\d{9}[\dX]$/.test(d)) { let t = 0; for (let i = 0; i < 10; i++) t += (d[i] === 'X' ? 10 : +d[i]) * (10 - i); if (t % 11 === 0) return d; }
+  }
+  return '';
+}
+const findDoi = (text) => (text.match(/\b10\.\d{4,9}\/[^\s"<>]+[^\s"<>.,;)]/) || [''])[0];
+const toArabicDigits = (t) => t.replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c)).replace(/[۰-۹]/g, (c) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(c));
+/** نص الصفحات الأولى والأخيرة (حيث تكون صفحة الحقوق ورقم ISBN)، من طبقة النص أو من النص المستخرج بالتعرّف الضوئي. */
+async function bookFrontText(b, pdf) {
+  const pages = [...new Set([...Array(Math.min(8, b.pages)).keys()].map((i) => i + 1).concat([b.pages - 1, b.pages].filter((n) => n > 0)))];
+  let out = '';
+  for (const n of pages) {
+    const tc = await pdf.getPage(n).then((p) => p.getTextContent()).catch(() => null);
+    let t = tc ? tc.items.map((i) => i.str).join(' ') : '';
+    if (t.trim().length < 20) { const rec = await Store.get('ocr', `${b.id}:${n}`); if (rec?.paras) t = rec.paras.join(' '); }
+    out += '\n' + t;
+  }
+  return toArabicDigits(out);
+}
+async function lookupIsbn(isbn) {
+  try {
+    const j = await (await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`)).json();
+    const v = j.items?.[0]?.volumeInfo;
+    if (v) return { title: [v.title, v.subtitle].filter(Boolean).join(': '), authors: v.authors || [], publisher: v.publisher, date: v.publishedDate, abstract: v.description, numPages: v.pageCount ? String(v.pageCount) : '', language: v.language, source: 'Google Books' };
+  } catch {}
+  try {
+    const j = await (await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`)).json();
+    const v = j[`ISBN:${isbn}`];
+    if (v) return { title: [v.title, v.subtitle].filter(Boolean).join(': '), authors: (v.authors || []).map((a) => a.name), publisher: v.publishers?.[0]?.name, place: v.publish_places?.[0]?.name, date: v.publish_date, numPages: v.number_of_pages ? String(v.number_of_pages) : '', source: 'Open Library' };
+  } catch {}
+  return null;
+}
+async function lookupDoi(doi) {
+  try {
+    const m = (await (await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`)).json()).message;
+    return { title: m.title?.[0], authors: (m.author || []).map((a) => [a.given, a.family].filter(Boolean).join(' ')), publisher: m.publisher, date: (m.issued?.['date-parts']?.[0] || []).join('-'), abstract: (m.abstract || '').replace(/<[^>]+>/g, ''), source: 'Crossref' };
+  } catch { return null; }
+}
+/** يملأ الحقول الفارغة فقط، فلا يُمحى ما كتبه القارئ. */
+async function autofillMeta(b) {
+  const meta = bookMeta(b), found = [];
+  const pdf = R.book === b && R.pdf ? R.pdf : await pdfjsLib.getDocument({ data: await loadBookFile(b) }).promise;
+  // الحقول الفارغة وحدها تُملأ، والعنوان ما لم يعدّله القارئ؛ وبيانات الفهارس (Google Books…) أدق من بيانات الملف
+  const put = (k, v) => { if (v && !String(meta[k] || '').trim()) { meta[k] = String(v).trim(); return true; } return false; };
+  const putAuthors = (list) => { if (list?.length && !meta.creators.some((c) => c.name?.trim())) meta.creators = list.map((name) => ({ type: 'author', name })); };
+  const putTitle = (t) => { if (t && t.length > 3 && !meta.titleEdited) { meta.title = t; return true; } return false; };
+  const text = await bookFrontText(b, pdf);
+  const isbn = findIsbn(text), doi = findDoi(text);
+  if (isbn) put('isbn', isbn);
+  if (doi) put('doi', doi);
+  const r = (meta.isbn && await lookupIsbn(meta.isbn.replace(/[-\s]/g, ''))) || (meta.doi && await lookupDoi(meta.doi));
+  if (r) {
+    putTitle(r.title); putAuthors(r.authors);
+    ['publisher', 'place', 'date', 'numPages', 'language', 'abstract'].forEach((k) => put(k, r[k]));
+    found.push(r.source);
+  }
+  try {
+    const { info } = await pdf.getMetadata();
+    let used = false;
+    if (info?.Author) { const before = meta.creators.length; putAuthors(info.Author.split(/\s*[;،,&]\s*|\s+and\s+/).filter(Boolean)); used = used || meta.creators.length !== before; }
+    if (!r && info?.Title && !/untitled|microsoft|\.(pdf|docx?)$/i.test(info.Title)) used = putTitle(info.Title) || used;
+    if (info?.Subject) used = put('abstract', info.Subject) || used;
+    if (used) found.unshift('بيانات ملف PDF');
+  } catch {}
+  put('numPages', String(b.pages || ''));
+  saveBook(b);
+  return { isbn, doi, found };
+}
+// تقسيم الاسم كما يتوقعه Zotero: الأسماء اللاتينية إلى اسم أول واسم عائلة، والعربية حقلًا واحدًا
+function zoteroCreator(c) {
+  const name = c.name.trim();
+  if (name.includes(',')) { const [last, first] = name.split(',').map((x) => x.trim()); return { creatorType: c.type, lastName: last, firstName: first || '' }; }
+  if (!isArabic(name) && name.includes(' ')) { const parts = name.split(/\s+/); return { creatorType: c.type, lastName: parts.pop(), firstName: parts.join(' ') }; }
+  return { creatorType: c.type, name };
+}
+function zoteroItem(b) {
+  const m = bookMeta(b);
+  return {
+    itemType: 'book', title: m.title || b.title, creators: m.creators.filter((c) => c.name?.trim()).map(zoteroCreator),
+    abstractNote: m.abstract || '', series: m.series || '', edition: m.edition || '', place: m.place || '', publisher: m.publisher || '',
+    date: m.date || '', numPages: m.numPages || '', language: m.language || '', ISBN: m.isbn || '', url: m.url || '',
+    extra: m.doi ? `DOI: ${m.doi}` : '', tags: bookTags(b).map((tag) => ({ tag })),
+    collections: S.settings.zoteroCollection ? [S.settings.zoteroCollection] : [],
+  };
+}
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+/** ملاحظة Zotero مرفقة بالكتاب: التظليلات مع صفحاتها، وترجماتها وملاحظات القارئ. */
+function zoteroNoteHtml(b) {
+  const gs = groupMarks().filter((g) => g.bookId === b.id).sort((x, y) => x.page - y.page);
+  if (!gs.length) return '';
+  const rows = gs.map((g) => `<blockquote dir="${isArabic(g.text) ? 'rtl' : 'ltr'}">${esc(g.text)}</blockquote>`
+    + (g.trans ? `<p dir="${g.trans.to === 'ar' ? 'rtl' : 'ltr'}"><i>${esc(g.trans.text)}</i></p>` : '')
+    + (g.note ? `<p>✎ ${esc(g.note)}</p>` : '') + `<p><small>(ص ${g.page})</small></p>`);
+  return `<h1>تظليلات وملاحظات «${esc(bookMeta(b).title || b.title)}» من رفّ</h1>` + rows.join('<hr/>');
+}
+async function zoteroFetch(path, opts = {}) {
+  const res = await fetch(`https://api.zotero.org${path}`, { ...opts, headers: { 'Zotero-API-Key': S.settings.zoteroKey, 'Zotero-API-Version': '3', 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  return res;
+}
+/** يتحقق من المفتاح ويعرف رقم مكتبة المستخدم منه، ويجلب مجموعاته. */
+async function zoteroConnect() {
+  let res;
+  try { res = await zoteroFetch(`/keys/${encodeURIComponent(S.settings.zoteroKey)}`); } catch { throw Object.assign(new Error('net'), { reason: 'تعذّر الاتصال بـ Zotero' }); }
+  if (!res.ok) throw Object.assign(new Error('key'), { reason: res.status === 403 || res.status === 404 ? 'مفتاح Zotero غير صالح' : `خطأ ${res.status}` });
+  const k = await res.json();
+  if (!k.access?.user?.write) throw Object.assign(new Error('perm'), { reason: 'المفتاح لا يسمح بالكتابة؛ فعّل «Allow write access» عند إنشائه' });
+  S.settings.zoteroUser = String(k.userID); saveSettings();
+  const cols = await (await zoteroFetch(`/users/${k.userID}/collections?limit=100`)).json().catch(() => []);
+  return { user: k.username, collections: (Array.isArray(cols) ? cols : []).map((c) => ({ key: c.key, name: c.data.name })) };
+}
+/** ينشئ العنصر أو يحدّثه إن أُرسل من قبل، ثم الملاحظة المرفقة. */
+async function zoteroSend(b, withNotes) {
+  if (!S.settings.zoteroUser) await zoteroConnect();
+  const base = `/users/${S.settings.zoteroUser}/items`, z = b.zotero || {};
+  const upsert = async (key, version, data) => {
+    if (key) {
+      let res = await zoteroFetch(`${base}/${key}`, { method: 'PATCH', headers: { 'If-Unmodified-Since-Version': String(version || 0) }, body: JSON.stringify(data) });
+      if (res.status === 412) { // تغيّر في Zotero منذ آخر إرسال: يُؤخذ رقم النسخة الحالي ويُعاد
+        const cur = await (await zoteroFetch(`${base}/${key}`)).json();
+        res = await zoteroFetch(`${base}/${key}`, { method: 'PATCH', headers: { 'If-Unmodified-Since-Version': String(cur.version) }, body: JSON.stringify(data) });
+      }
+      if (res.ok || res.status === 204) return { key, version: +(res.headers.get('Last-Modified-Version') || version) };
+      if (res.status !== 404) throw Object.assign(new Error('patch'), { reason: `خطأ ${res.status} من Zotero` });
+    }
+    const res = await zoteroFetch(base, { method: 'POST', headers: { 'Zotero-Write-Token': [...crypto.getRandomValues(new Uint8Array(16))].map((x) => x.toString(16).padStart(2, '0')).join('') }, body: JSON.stringify([data]) });
+    const j = await res.json().catch(() => ({}));
+    const ok = j.successful?.['0'];
+    if (!res.ok || !ok) throw Object.assign(new Error('post'), { reason: j.failed?.['0']?.message || `خطأ ${res.status} من Zotero` });
+    return { key: ok.key, version: ok.version };
+  };
+  const item = await upsert(z.key, z.version, zoteroItem(b));
+  b.zotero = { ...z, ...item, at: Date.now() };
+  const html = withNotes ? zoteroNoteHtml(b) : '';
+  if (html) { const n = await upsert(z.noteKey, z.noteVersion, { itemType: 'note', parentItem: item.key, note: html }); b.zotero.noteKey = n.key; b.zotero.noteVersion = n.version; }
+  saveBook(b);
+  return { updated: !!z.key, notes: !!html };
+}
+/** بديل بلا مفتاح: ملف RIS يستورده Zotero (ومعظم برامج المراجع). */
+function risOf(b) {
+  const m = bookMeta(b), L = ['TY  - BOOK', `TI  - ${m.title || b.title}`];
+  for (const c of m.creators.filter((c) => c.name?.trim())) L.push(`${c.type === 'editor' ? 'ED' : c.type === 'translator' ? 'A4' : 'AU'}  - ${c.name.trim()}`);
+  const f = { PB: m.publisher, CY: m.place, PY: m.date, ET: m.edition, SN: m.isbn, DO: m.doi, LA: m.language, T2: m.series, UR: m.url, AB: m.abstract, SP: m.numPages };
+  for (const [k, v] of Object.entries(f)) if (v) L.push(`${k}  - ${String(v).replace(/\s*\n\s*/g, ' ')}`);
+  for (const t of bookTags(b)) L.push(`KW  - ${t}`);
+  L.push('ER  - ');
+  return L.join('\r\n') + '\r\n';
+}
+async function exportRis(b) {
+  const name = `${(bookMeta(b).title || b.title).replace(/[\\/:*?"<>|]/g, '').slice(0, 60)}.ris`;
+  const file = new File([risOf(b)], name, { type: 'application/x-research-info-systems' });
+  try { if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; } } catch (e) { if (e?.name === 'AbortError') return; }
+  const a = el('a', { href: URL.createObjectURL(file), download: name }); document.body.append(a); a.click(); a.remove();
+  toast('صُدّر ملف RIS.');
+}
+/** نافذة بيانات الكتاب: تحرير الحقول، والاستخراج التلقائي، والإرسال إلى Zotero أو تصدير RIS. */
+function openMetaSheet(b) {
+  closeMenu();
+  const meta = bookMeta(b);
+  const status = el('div', { class: 'ms-status', role: 'status' });
+  const say = (t, kind = '') => { status.textContent = t; status.dataset.kind = kind; };
+  const field = (k, label, dir) => el('label', { class: 'ms-field' }, el('span', {}, label),
+    el('input', { class: 'input', value: meta[k] || '', dir: dir || 'auto', oninput: (e) => { meta[k] = e.target.value; if (k === 'title') meta.titleEdited = true; saveBook(b); } }));
+  const creatorsBox = el('div', { class: 'ms-creators' });
+  const renderCreators = () => creatorsBox.replaceChildren(...meta.creators.map((c, i) => el('div', { class: 'ms-creator' },
+    el('select', { class: 'sort-sel', 'aria-label': 'الصفة', onchange: (e) => { c.type = e.target.value; saveBook(b); } }, ...CREATOR_TYPES.map(([k, l]) => el('option', { value: k, selected: c.type === k }, l))),
+    el('input', { class: 'input', value: c.name, dir: 'auto', placeholder: 'الاسم الكامل، أو: العائلة، الاسم', oninput: (e) => { c.name = e.target.value; saveBook(b); } }),
+    el('button', { class: 'icon-btn', 'aria-label': 'حذف الاسم', onclick: () => { meta.creators.splice(i, 1); saveBook(b); renderCreators(); } }, icon('close')))),
+    el('button', { class: 'btn ghost', onclick: () => { meta.creators.push({ type: 'author', name: '' }); renderCreators(); creatorsBox.querySelector('.ms-creator:last-of-type input')?.focus(); } }, icon('plus'), 'إضافة اسم'));
+  renderCreators();
+  const withNotes = el('input', { type: 'checkbox', checked: S.settings.zoteroNotes !== false, onchange: (e) => { S.settings.zoteroNotes = e.target.checked; saveSettings(); } });
+  const zKey = el('input', { class: 'input', type: 'password', dir: 'ltr', placeholder: 'مفتاح Zotero API', value: S.settings.zoteroKey || '', autocomplete: 'off', spellcheck: 'false' });
+  const colSel = el('select', { class: 'sort-sel', 'aria-label': 'المجموعة في Zotero', onchange: (e) => { S.settings.zoteroCollection = e.target.value; saveSettings(); } },
+    el('option', { value: '' }, 'المكتبة الرئيسية'));
+  const fillCols = (cols) => { colSel.replaceChildren(el('option', { value: '' }, 'المكتبة الرئيسية'), ...cols.map((c) => el('option', { value: c.key, selected: S.settings.zoteroCollection === c.key }, c.name))); };
+  const connect = async () => {
+    S.settings.zoteroKey = zKey.value.trim(); S.settings.zoteroUser = ''; saveSettings();
+    if (!S.settings.zoteroKey) return say('أضف مفتاح Zotero أولًا.', 'err');
+    say('جارٍ الاتصال بـ Zotero…');
+    try { const r = await zoteroConnect(); fillCols(r.collections); say(`متصل بمكتبة ${r.user} في Zotero.`, 'ok'); }
+    catch (e) { say(`لم ينجح الاتصال: ${e.reason || 'خطأ غير متوقع'}.`, 'err'); }
+  };
+  const sheet = el('div', { class: 'sheet-back', onclick: (e) => { if (e.target === sheet) close(); } },
+    el('div', { class: 'sheet', role: 'dialog', 'aria-label': 'بيانات الكتاب' },
+      el('div', { class: 'sheet-head' }, el('h2', {}, 'بيانات الكتاب'), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => close() }, icon('close'))),
+      el('div', { class: 'sheet-body' },
+        el('div', { class: 'ms-auto' }, el('span', {}, 'يستخرج التطبيق البيانات من ملف PDF ومن رقم ISBN أو DOI في صفحاته الأولى، ويملأ الحقول الفارغة فقط.'),
+          el('button', { class: 'btn', onclick: async (e) => {
+            const btn = e.currentTarget; btn.disabled = true; say('جارٍ البحث في الكتاب…');
+            try {
+              const r = await autofillMeta(b); close(); openMetaSheet(b);
+              toast(r.found.length ? `مُلئت البيانات من: ${r.found.join('، ')}.` : r.isbn || r.doi ? `وُجد ${r.isbn ? 'ISBN ' + r.isbn : 'DOI'} لكن لم تُعثر على بياناته؛ أكملها يدويًا.` : 'لم يُعثر على ISBN أو DOI في الكتاب؛ أكمل البيانات يدويًا.');
+            } catch { say('تعذّر الاستخراج الآن.', 'err'); btn.disabled = false; }
+          } }, icon('zoom'), 'استخراج تلقائي')),
+        field('title', 'العنوان'),
+        el('div', { class: 'ms-field' }, el('span', {}, 'المؤلفون والمحررون والمترجمون'), creatorsBox),
+        el('div', { class: 'ms-grid' }, ...META_FIELDS.map(([k, l, d]) => field(k, l, d))),
+        el('label', { class: 'ms-field' }, el('span', {}, 'الملخص'),
+          el('textarea', { class: 'input', rows: 5, dir: 'auto', value: meta.abstract || '', oninput: (e) => { meta.abstract = e.target.value; saveBook(b); } })),
+        el('section', { class: 'ms-zotero' },
+          el('h3', {}, 'Zotero'),
+          el('p', { class: 'muted' }, 'أنشئ مفتاحًا من zotero.org/settings/keys مع تفعيل «Allow write access»، والصقه هنا مرة واحدة. يصل الكتاب إلى مكتبتك في Zotero على كل أجهزتك.'),
+          el('div', { class: 'row' }, zKey, el('button', { class: 'btn', onclick: connect }, 'اتصال')),
+          el('label', { class: 'ms-row' }, el('span', {}, 'المجموعة:'), colSel),
+          el('label', { class: 'ms-row' }, withNotes, el('span', {}, 'إرسال تظليلاتي وترجماتها وملاحظاتي معه (ملاحظة مرفقة بالكتاب)')),
+          b.zotero?.key ? el('p', { class: 'muted' }, `أُرسل من قبل في ${new Date(b.zotero.at).toLocaleDateString('ar-u-nu-latn')}؛ الإرسال مجددًا يحدّث العنصر نفسه.`) : null)),
+      el('div', { class: 'sheet-foot' }, status,
+        el('button', { class: 'btn', onclick: () => exportRis(b) }, 'تصدير RIS'),
+        el('button', { class: 'btn primary', onclick: async (e) => {
+          S.settings.zoteroKey = zKey.value.trim(); saveSettings();
+          if (!S.settings.zoteroKey) return say('أضف مفتاح Zotero، أو استعمل «تصدير RIS».', 'err');
+          const btn = e.currentTarget; btn.disabled = true; say('جارٍ الإرسال إلى Zotero…');
+          try { const r = await zoteroSend(b, withNotes.checked); say(`${r.updated ? 'حُدّث' : 'أُضيف'} الكتاب في Zotero${r.notes ? ' مع تظليلاته وملاحظاته' : ''}.`, 'ok'); }
+          catch (err) { say(`لم يُرسل: ${err.reason || 'تعذّر الاتصال بـ Zotero'}.`, 'err'); }
+          btn.disabled = false;
+        } }, 'إرسال إلى Zotero'))));
+  const close = () => { sheet.remove(); document.removeEventListener('keydown', onKey); if (S.view === 'library' && readerEl.hidden) renderLibrary(); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  document.body.append(sheet);
+  if (S.settings.zoteroKey && S.settings.zoteroUser) zoteroConnect().then((r) => fillCols(r.collections)).catch(() => {});
 }
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.claude) {
