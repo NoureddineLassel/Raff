@@ -615,6 +615,18 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 .anno-item[data-color="pink"] { border-color: var(--ul-pink); }
 .anno-item[data-color="blue"] { border-color: var(--ul-blue); }
 .anno-item q { font-family: var(--font-read); font-size: 16px; display: block; quotes: none; line-height: 1.7; }
+/* زر النسخ في مربع الملاحظة وقائمته */
+.anno-row { position: relative; }
+.anno-row .anno-item { padding-left: 46px; }
+.copy-btn { color: var(--muted); }
+.anno-row > .copy-btn { position: absolute; top: 8px; left: 6px; z-index: 1; width: 36px; height: 36px; }
+.dr-copy { position: absolute; top: 40px; left: 4px; width: 32px; height: 32px; opacity: .6; }
+.dr-copy .icon { width: 17px; height: 17px; }
+.copy-btn:hover, .copy-btn:focus-visible, .copy-btn[aria-expanded="true"] { color: var(--accent); opacity: 1; }
+.copy-menu { position: fixed; z-index: 80; display: grid; min-width: 170px; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow), 0 12px 30px -10px rgba(0,0,0,.3); }
+.copy-menu button { display: flex; align-items: center; gap: 10px; border: 0; background: none; padding: 10px 12px; min-height: 44px; border-radius: 10px; color: var(--ink); text-align: start; font-size: 15px; }
+.copy-menu button:hover, .copy-menu button:focus-visible { background: var(--surface-2); }
+.copy-menu .icon { width: 18px; height: 18px; color: var(--muted); }
 /* قائمة الملاحظات تُمرَّر وحدها */
 .notes-items { overflow-y: auto; min-height: 0; padding: 0 8px 40px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; display: grid; gap: 4px; align-content: start; }
 .anno-item[aria-current="true"] { background: var(--accent-soft); }
