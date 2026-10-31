@@ -23,6 +23,7 @@ img { max-width: 100%; }
 body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; overscroll-behavior: none; }
 .ocr-text, textarea, input, .pop .src, .pop .out { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 button, a, input, .tap-zone { touch-action: manipulation; }
+}
 </style>
 </head>
 <body>
@@ -115,7 +116,7 @@ button { cursor: pointer; }
 .rail-shelf[aria-selected="true"] { font-weight: 700; background: linear-gradient(180deg, rgb(255 255 255 / .35), rgb(255 255 255 / 0) 60%), rgb(var(--g) / .55);
   border-color: rgb(var(--g)); box-shadow: inset 0 1px 0 rgb(255 255 255 / .55), 0 0 0 2px rgb(var(--g) / .35), 0 2px 6px rgb(var(--g) / .35); }
 /* بطاقات الثيمات: نموذج مصغّر للتطبيق بألوان كل ثيم */
-.theme-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 12px; width: 100%; margin-top: 10px; }
+.theme-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; width: 100%; margin-top: 12px; }
 .theme-card { display: grid; gap: 6px; justify-items: center; padding: 6px; border: 2px solid transparent; border-radius: 16px; background: none; color: var(--ink); font-size: 13px; }
 .theme-card[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .tc-prev { position: relative; display: block; width: 100%; height: 84px; border-radius: 11px; overflow: hidden; background: var(--p); box-shadow: inset 0 0 0 1px var(--l), 0 1px 3px rgba(0,0,0,.12); }
@@ -194,6 +195,9 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 .empty-shelf p { margin: 0; max-width: 40ch; font-size: 15px; }
 .shelf .book-meta, .shelf .book .more { color: var(--sh-ink); }
 .local-badge { position: absolute; top: 18px; inset-inline-start: 6px; background: var(--ink); color: var(--paper); font-size: 11px; padding: 1px 8px; border-radius: 999px; }
+.install-tip { display: flex; align-items: center; gap: 8px; padding: 6px 14px 6px 8px; font-size: 13.5px; line-height: 1.6; }
+.install-tip span { flex: 1; }
+.install-tip .icon-btn { flex: none; width: 36px; height: 36px; }
 .notice { background: var(--accent-soft); color: var(--ink); border-radius: 14px; padding: 12px 16px; margin-bottom: 16px; font-size: 14.5px; line-height: 1.7; }
 .shelf-tabs { display: flex; gap: 8px; align-items: center; overflow-x: auto; padding: 2px 2px 8px; margin-bottom: 14px; scrollbar-width: thin; }
 .shelf-chip { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 6px 14px; min-height: 42px; white-space: nowrap; font-size: 15px; flex: none; }
@@ -316,6 +320,12 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 }
 .r-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-inline: 6px; }
 .r-pageno { font-size: 14px; color: var(--muted); padding-inline: 8px; white-space: nowrap; }
+/* أدوات القارئ: مجموعات بحسب الغرض، بفاصل رفيع ومسافة أوسع بين المجموعات منها داخلها */
+.r-top .r-title { flex: 1 1 auto; min-width: 5em; }
+.r-tools { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+.r-tools::-webkit-scrollbar { display: none; }
+.r-group { display: flex; align-items: center; gap: 2px; flex: none; padding-inline-start: 6px; border-inline-start: 1px solid var(--line); }
+.r-group .icon-btn { flex: none; }
 .r-body { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; position: relative; }
 .r-body.with-panel { grid-template-columns: minmax(0, 1fr) minmax(320px, 42%); }
 .stage { position: relative; display: grid; place-items: center; overflow: hidden; touch-action: pan-y; padding: 16px; min-width: 0; }
@@ -690,6 +700,7 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 .anno-detail[data-color="blue"] .ad-src { border-inline-start-color: var(--ul-blue); }
 .ad-trans { font-size: 17px; line-height: 1.8; padding: 14px 18px; background: var(--surface); border-radius: 14px; border-inline-start: 5px solid var(--accent); white-space: pre-wrap; -webkit-user-select: text; user-select: text; }
 .anno-note-in { width: 100%; min-height: 120px; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--surface); color: var(--ink); font: inherit; font-size: 16px; line-height: 1.7; resize: vertical; }
+.notes-back { display: none; }
 .notes-editor { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; min-width: 0; }
 .editor-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .editor-bar .title-in { flex: 1 1 220px; font-size: 20px; font-weight: 600; border: 0; background: none; padding: 6px 0; min-width: 0; }
@@ -756,6 +767,19 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
   .shelf.classic { --up: 16px; padding-inline: calc(var(--up) + 10px); margin-inline: 8px; }
   .cards { grid-template-columns: minmax(0, 1fr); }
 }
+@media (max-width: 760px) {
+  /* الملاحظات في الهاتف: القائمة أو الملاحظة المفتوحة، كلٌّ بملء الشاشة */
+  .notes-layout, .notes-layout.show-detail { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .notes-layout:not(.show-detail) > .notes-editor, .notes-layout.show-detail > .notes-list { display: none; }
+  .notes-layout.show-detail .notes-editor { grid-template-rows: auto auto minmax(0, 1fr); }
+  .notes-back { display: flex; justify-content: flex-start; width: 100%; margin: 0; min-height: 48px; padding: 4px 12px; border-radius: 0; border: 0; background: var(--surface); color: var(--accent); font-weight: 600; }
+  .notes-list { border-bottom: 0; }
+  /* الرسائل فوق شريط الأقسام السفلي لا عليه */
+  .toast { bottom: calc(78px + env(safe-area-inset-bottom, 0px)); }
+  .r-top { gap: 2px; }
+  .r-pageno { padding-inline: 4px; font-size: 13px; }
+  /* الأدوات المخفية خلف الحافة تُلمَّح بتلاشٍ يدعو للتمرير */
+  .r-tools { -webkit-mask-image: linear-gradient(to left, transparent, #000 28px); mask-image: linear-gradient(to left, transparent, #000 28px); padding-left: 20px; }
 </style>
 
 <div id="app" dir="rtl" lang="ar">

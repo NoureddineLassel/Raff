@@ -63,7 +63,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v29'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v30'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1008,7 +1008,9 @@ function renderLibrary() {
         el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, icon('upload'), 'إضافة ملف PDF'))),
     S.books.length ? tagBar(onShelf) : null);
   const view = el('div', { class: 'view' }, el('div', { class: 'view-inner' }, top,
-    Cloud.ok || isInstalled() ? null : el('div', { class: 'notice' }, 'لتثبيت «رفّ» على iPad: اضغط زر المشاركة في Safari ثم «إضافة إلى الشاشة الرئيسية». يفتح بعدها مباشرة بملء الشاشة، ويعمل دون إنترنت، وتبقى مكتبتك محفوظة على الجهاز.'),
+    Cloud.ok || isInstalled() || S.settings.hideInstallTip ? null : el('div', { class: 'notice install-tip' },
+      el('span', {}, 'لتثبيت «رفّ» على iPad: اضغط زر المشاركة في Safari ثم «إضافة إلى الشاشة الرئيسية». يفتح بعدها مباشرة بملء الشاشة، ويعمل دون إنترنت.'),
+      el('button', { class: 'icon-btn', 'aria-label': 'إخفاء هذه الملاحظة', title: 'إخفاء', onclick: () => { S.settings.hideInstallTip = true; saveSettings(); renderLibrary(); } }, icon('close'))),
     tabs,
     S.customize ? customizePanel(shelf, themeKey) : null,
     books.length ? el('div', { class: 'shelf' + shelfCls(themeKey), style: shelfVars(themeKey) }, books.map(bookCard))
@@ -1269,7 +1271,13 @@ function buildReader() {
   E.sizeBtn = el('button', { class: 'icon-btn', title: 'حجم الصفحة', 'aria-label': 'حجم الصفحة', 'aria-haspopup': 'dialog', onclick: () => toggleSizePop() }, icon('zoom'));
   const top = el('div', { class: 'r-top' },
     el('button', { class: 'icon-btn', 'aria-label': 'العودة إلى المكتبة', title: 'المكتبة', onclick: closeReader }, icon('back')),
-    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo, E.metaBtn, E.dirBtn, E.autoTrBtn, E.sizeBtn, E.modeBtn, E.thBtn, E.bmBtn, E.penBtn, E.txtBtn, E.drawerBtn);
+    el('div', { class: 'r-title', dir: 'auto', title: b.title }, b.title), E.pageNo,
+    // الأدوات في مجموعات بحسب الغرض؛ وفي الشاشة الضيقة تُمرَّر أفقيًا ويبقى العنوان ظاهرًا
+    el('div', { class: 'r-tools', role: 'toolbar', 'aria-label': 'أدوات القراءة' },
+      el('div', { class: 'r-group', role: 'group', 'aria-label': 'العرض' }, E.modeBtn, E.sizeBtn, E.dirBtn),
+      el('div', { class: 'r-group', role: 'group', 'aria-label': 'التدوين' }, E.penBtn, E.bmBtn, E.txtBtn),
+      el('div', { class: 'r-group', role: 'group', 'aria-label': 'التنقل' }, E.thBtn, E.drawerBtn),
+      el('div', { class: 'r-group', role: 'group', 'aria-label': 'مساعدة' }, E.autoTrBtn, E.metaBtn)));
   E.bookEl = el('div', { class: 'book-view' });
   E.tapNext = el('button', { class: 'tap-zone next', 'aria-label': 'الصفحة التالية', onclick: () => goto(R.page + stepSize(), 1) });
   E.tapPrev = el('button', { class: 'tap-zone prev', 'aria-label': 'الصفحة السابقة', onclick: () => goto(R.page - stepSize(), -1) });
@@ -2980,11 +2988,11 @@ function renderNotes() {
   const search = el('input', { class: 'input', type: 'search', placeholder: 'بحث في الملاحظات', 'aria-label': 'بحث', value: S.noteQuery, id: 'noteSearch' });
   search.addEventListener('input', debounce(() => { S.noteQuery = search.value; renderNotes(); $('#noteSearch')?.focus(); }, 250));
   const tabs = el('div', { class: 'seg' },
-    el('button', { 'aria-pressed': String(S.notesTab === 'notebook'), onclick: () => { S.notesTab = 'notebook'; renderNotes(); } }, 'الدفتر'),
-    el('button', { 'aria-pressed': String(S.notesTab === 'annos'), onclick: () => { S.notesTab = 'annos'; renderNotes(); } }, `من الكتب (${fmt(new Set(S.marks.map((m) => m.group)).size)})`));
+    el('button', { 'aria-pressed': String(S.notesTab === 'notebook'), onclick: () => { S.notesTab = 'notebook'; S.notesDetail = false; renderNotes(); } }, 'الدفتر'),
+    el('button', { 'aria-pressed': String(S.notesTab === 'annos'), onclick: () => { S.notesTab = 'annos'; S.notesDetail = false; renderNotes(); } }, `من الكتب (${fmt(new Set(S.marks.map((m) => m.group)).size)})`));
   const list = el('div', { class: 'notes-items' });
   if (S.notesTab === 'notebook') {
-    notes.forEach((n) => list.append(el('button', { class: 'note-item', 'aria-current': String(n.id === S.noteId), onclick: () => { S.noteId = n.id; renderNotes(); } },
+    notes.forEach((n) => list.append(el('button', { class: 'note-item', 'aria-current': String(n.id === S.noteId), onclick: () => { S.noteId = n.id; S.notesDetail = true; renderNotes(); } },
       el('b', {}, n.title || 'بدون عنوان'),
       el('small', {}, new Date(n.updated).toLocaleDateString('ar-u-nu-latn', { day: 'numeric', month: 'long' }) + ' · ' + (n.pages.map((p) => p.text).join(' ').trim().slice(0, 60) || `${n.pages.length} صفحة`)))));
     if (!notes.length) list.append(el('p', { class: 'muted', style: 'padding:12px' }, q ? 'لا نتائج.' : 'لا توجد ملاحظات.'));
@@ -2992,7 +3000,7 @@ function renderNotes() {
     const groups = groupMarks().filter((g) => !q || (g.text + g.note + (g.trans?.text || '')).includes(q));
     groups.forEach((g) => {
       const b = S.books.find((x) => x.id === g.bookId);
-      list.append(el('div', { class: 'anno-row' }, copyBtn(g), el('button', { class: 'note-item anno-item', 'data-color': g.color, 'aria-current': String(S.annoSel === g.group), onclick: () => { S.annoSel = g.group; renderNotes(); } },
+      list.append(el('div', { class: 'anno-row' }, copyBtn(g), el('button', { class: 'note-item anno-item', 'data-color': g.color, 'aria-current': String(S.annoSel === g.group), onclick: () => { S.annoSel = g.group; S.notesDetail = true; renderNotes(); } },
         el('q', {}, g.text.length > 140 ? g.text.slice(0, 140) + '…' : g.text),
         g.note ? el('small', { style: 'white-space:normal;color:var(--ink)' }, '✎ ' + g.note) : null,
         g.trans ? el('small', { class: 'anno-trans', dir: g.trans.to === 'ar' ? 'rtl' : 'ltr', lang: g.trans.to }, g.trans.text.length > 260 ? g.trans.text.slice(0, 260) + '…' : g.trans.text) : null,
@@ -3003,7 +3011,7 @@ function renderNotes() {
   const side = el('section', { class: 'notes-list' },
     el('div', { class: 'notes-list-head' },
       el('div', { class: 'row', style: 'justify-content:space-between' }, el('h1', {}, 'الملاحظات'),
-        el('button', { class: 'btn primary', onclick: () => { S.notesTab = 'notebook'; newNote(); renderNotes(); } }, icon('plus'), 'جديدة')),
+        el('button', { class: 'btn primary', onclick: () => { S.notesTab = 'notebook'; newNote(); S.notesDetail = true; renderNotes(); } }, icon('plus'), 'جديدة')),
       tabs, search),
     list);
   const note = S.notes.find((n) => n.id === S.noteId);
@@ -3012,7 +3020,9 @@ function renderNotes() {
   if (note && S.notesTab === 'notebook') buildEditor(editor, note);
   else if (anno) annoDetail(editor, anno);
   else editor.append(el('div', { class: 'empty' }, S.notesTab === 'annos' ? 'اختر تظليلًا لتقرأ نصه كاملًا مع ترجمته وملاحظتك.' : 'أنشئ ملاحظة جديدة لتكتب بلوحة المفاتيح أو بالقلم.'));
-  main.replaceChildren(el('div', { class: 'notes-layout' }, side, editor));
+  // في الهاتف: القائمة شاشة، والملاحظة المفتوحة شاشة أخرى بزر رجوع
+  editor.prepend(el('button', { class: 'btn ghost notes-back', onclick: () => { S.notesDetail = false; renderNotes(); } }, icon('back'), 'كل الملاحظات'));
+  main.replaceChildren(el('div', { class: 'notes-layout' + (S.notesDetail ? ' show-detail' : '') }, side, editor));
 }
 function groupMarks() {
   const m = new Map();
