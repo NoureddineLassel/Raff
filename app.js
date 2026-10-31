@@ -63,7 +63,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v26'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v27'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -2715,7 +2715,14 @@ Translate the user's text into the requested target language with the precision 
 - Preserve meaning, nuance, hedging and register; keep proper names, acronyms and titles accurate, adding the original term in parentheses after a key technical term when that helps the reader.
 - Keep the paragraph structure.
 - If the text is a single term or short expression, give its best equivalent first, then up to three alternative specialised equivalents, each with a few words on when it is used.
-Output only the translation (or the term list), with no preamble.`;
+Output only the translation (or the term list), with no preamble.
+Write plain text only: no Markdown or other formatting (no asterisks, underscores, hash signs or backticks); the text is shown exactly as written.`;
+/** يزيل علامات Markdown (** و__ و# و`) إن وصلت في الترجمة، ويُبقي النص والأسطر كما هي. */
+const plainText = (t) => String(t || '')
+  .replace(/\*\*([^*]+?)\*\*/g, '$1').replace(/__([^_]+?)__/g, '$1')
+  .replace(/(^|[\s(«"])\*([^*\s][^*]*?)\*(?=[\s).,،؛:!?»"]|$)/gm, '$1$2')
+  .replace(/^\s{0,3}#{1,6}\s+/gm, '').replace(/`([^`]+)`/g, '$1')
+  .replace(/\*\*/g, '');
 const LANG_DEEPL = { en: 'en', fr: 'fr', es: 'es', tr: 'tr', ar: 'ar' };
 const claudeAppUrl = (text, to) => `https://claude.ai/new?q=${encodeURIComponent(`ترجم النص التالي ترجمة أكاديمية متخصصة إلى ${LANGS[to]}:\n\n${text.slice(0, 6000)}`)}`;
 const deeplUrl = (text, from, to) => `https://www.deepl.com/translator#${from}/${LANG_DEEPL[to]}/${encodeURIComponent(text.slice(0, 5000).replace(/\//g, '\\/'))}`;
@@ -2805,6 +2812,7 @@ async function translatePop(text, rect, opts = {}) {
   const setBadge = (t) => { badge.textContent = t; };
   const failed = [];
   const done = (t, eng) => {
+    t = plainText(t).trim();
     if (pop !== p) return true;
     out.textContent = t; result = t; engine = eng; save.hidden = false;
     if (failed.length) { note.hidden = false; note.textContent = `${failed.join('، ')}. هذه ترجمة ${eng}.`; }
@@ -2819,8 +2827,8 @@ async function translatePop(text, rect, opts = {}) {
     setBadge('المساعد الأكاديمي · Claude');
     try {
       const t = sample
-        ? (await sample(`${ACADEMIC_SYSTEM}\n\nTarget language: ${LANG_EN[to]}\n<text>\n${text}\n</text>`, { modelTier: 'quick', onText: ({ text: x }) => { if (x) out.textContent = x; } })).text.trim()
-        : await translateClaudeApi(text, to, (x) => { if (x) out.textContent = x; }, ctrl.signal);
+        ? (await sample(`${ACADEMIC_SYSTEM}\n\nTarget language: ${LANG_EN[to]}\n<text>\n${text}\n</text>`, { modelTier: 'quick', onText: ({ text: x }) => { if (x) out.textContent = plainText(x); } })).text.trim()
+        : await translateClaudeApi(text, to, (x) => { if (x) out.textContent = plainText(x); }, ctrl.signal);
       return done(t, 'المساعد الأكاديمي');
     } catch (e) {
       if (ctrl.signal.aborted || pop !== p) return;
@@ -3520,6 +3528,8 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.cla
   const [books, shelves, notes, marks, daily, settings] = await Promise.all(
     [Store.all('books'), Store.all('shelves'), Store.all('notes'), Store.all('marks'), Store.all('daily'), Store.get('meta', 'settings')]);
   S.books = books; S.notes = notes; S.marks = marks;
+  // ترجمات حُفظت قبل تنظيف علامات التنسيق
+  for (const m of S.marks) if (m.trans?.text && /\*\*|__|^#|`/m.test(m.trans.text)) { m.trans.text = plainText(m.trans.text).trim(); Store.put('marks', m.id, m); }
   // ترتيب الرفوف يختاره القارئ بالسحب؛ الرفوف القديمة بلا ترتيب تأخذ ترتيب إنشائها
   S.shelves = shelves.sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || (a.created || 0) - (b.created || 0));
   S.shelves.forEach((x, i) => { if (x.order !== i) { x.order = i; Store.put('shelves', x.id, x); } });
