@@ -49,6 +49,14 @@ const ICONS = {
   autohide: 'M4 4h6v16H4zM14 12h7M17 9l-3 3 3 3',
   float: 'M3 8h12v12H3zM9 4h12v12M3 11h12',
   info: 'M12 3a9 9 0 100 18 9 9 0 100-18zM12 11v6M12 7.5h.01',
+  globe: 'M12 3a9 9 0 100 18 9 9 0 100-18zM3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9M12 3C9.5 5.6 8.2 8.6 8.2 12s1.3 6.4 3.8 9',
+  pillars: 'M3 9l9-5 9 5M5 9v9M9.7 9v9M14.3 9v9M19 9v9M3 20h18',
+  bulb: 'M9 18h6M10 21h4M12 3a6 6 0 00-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0012 3z',
+  target: 'M12 3a9 9 0 100 18 9 9 0 100-18zM12 7a5 5 0 100 10 5 5 0 100-10zM12 11a1 1 0 100 2 1 1 0 100-2z',
+  chat: 'M4 5h16v11H9l-5 4z',
+  cap: 'M2 9l10-5 10 5-10 5zM6 11.2V16c0 1.4 2.7 3 6 3s6-1.6 6-3v-4.8M22 9v5',
+  book: 'M4 5c2.5-1.3 5.5-1.3 8 0v14c-2.5-1.3-5.5-1.3-8 0zM12 5c2.5-1.3 5.5-1.3 8 0v14c-2.5-1.3-5.5-1.3-8 0z',
+  clock: 'M12 3a9 9 0 100 18 9 9 0 100-18zM12 7v5l3 2',
   zoom: 'M10.5 4a6.5 6.5 0 100 13 6.5 6.5 0 100-13zM15.5 15.5L21 21M8 10.5h5M10.5 8v5',
 };
 function icon(name, extra) {
@@ -63,7 +71,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v32'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v33'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -194,15 +202,6 @@ function setSaveState(st) {
   const where = Cloud.ok ? 'في حسابك' : Local.ok ? 'على هذا الجهاز' : '';
   if (!where) n.textContent = 'الحفظ مؤقت: التخزين غير متاح';
   else n.textContent = st === 'saving' ? 'جارٍ الحفظ…' : `حُفظ ${where} ${new Date().toLocaleTimeString('ar-u-nu-latn', { hour: '2-digit', minute: '2-digit' })}`;
-  updateLibStatus();
-}
-/** حالة الحفظ في شريط المكتبة السفلي (ثيم «المكتبة الرقمية»). */
-function updateLibStatus() {
-  const pill = document.querySelector('.lf-status'), n = $('#saveState'); if (!pill || !n) return;
-  const saving = n.dataset.state === 'saving';
-  pill.dataset.state = saving ? 'saving' : 'ready';
-  pill.lastChild.textContent = saving ? 'جارٍ الحفظ…' : 'جاهز للاستخدام';
-  pill.title = n.textContent;
 }
 
 // ---------- App state ----------
@@ -756,6 +755,21 @@ function showView(v) {
   ({ library: renderLibrary, notes: renderNotes, stats: renderStats, settings: renderSettings })[v]();
   renderRailShelves();
 }
+// أيقونة كل رف: يختارها القارئ من «تخصيص»، وإلا تُستنتج من اسم الرف
+const SHELF_ICONS = [['book', 'كتاب'], ['globe', 'عالم'], ['pillars', 'سياسة'], ['bulb', 'نظريات'], ['target', 'استراتيجية'], ['latin', 'لغة'], ['chat', 'نقاش'], ['cap', 'تدريس'], ['bookmark', 'مرجع'], ['tag', 'وسم']];
+function shelfIcon(x) {
+  if (x.icon) return x.icon;
+  const n = x.name.toLowerCase();
+  if (/english|anglais|français|french|إنجليز|فرنس|لغ/.test(n)) return 'latin';
+  if (/دولي|عالم|international|world|global/.test(n)) return 'globe';
+  if (/خارجي|foreign|استراتيج|أمن|strateg|security/.test(n)) return 'target';
+  if (/سياس|politic|حكم|دولة|state/.test(n)) return 'pillars';
+  if (/نظري|theor|فكر|فلسف|philos/.test(n)) return 'bulb';
+  if (/مناقش|نقاش|حوار|أطروح|debat|discuss|thes/.test(n)) return 'chat';
+  if (/تدريس|درس|محاضر|طلب|teach|course|lecture/.test(n)) return 'cap';
+  return 'book';
+}
+const shelfIconEl = (k) => (k === 'latin' ? el('b', { class: 'rs-letter' }, 'A') : icon(k));
 const GLASS = ['148 160 156', '88 160 210', '96 178 140', '226 150 90', '200 110 160', '150 120 210', '214 180 70', '80 170 170', '220 110 110', '120 140 200'];
 /** الرفوف في الشريط الجانبي تحت زر المكتبة. */
 function renderRailShelves() {
@@ -770,9 +784,9 @@ function renderRailShelves() {
     Store.put('shelves', x.id, x);
   }
   const tint = (id) => (id === 'all' ? 0 : S.shelves.find((x) => x.id === id)?.glass || 1);
-  const item = (id, name, n) => el('button', { class: 'rail-shelf', role: 'tab', 'aria-selected': String(S.settings.shelf === id), title: `${name} (${bookCount(n)})`, style: `--g:${GLASS[tint(id)]}`, onclick: () => selectShelf(id) },
-    el('span', { class: 'rs-name' }, name));
-  const kids = [item('all', 'كل الكتب', S.books.length), ...S.shelves.map((x) => item(x.id, x.name, shelfBooks(x.id).length))];
+  const item = (id, name, n, ic) => el('button', { class: 'rail-shelf', role: 'tab', 'aria-selected': String(S.settings.shelf === id), title: `${name} (${bookCount(n)})`, style: `--g:${GLASS[tint(id)]}`, onclick: () => selectShelf(id) },
+    el('span', { class: 'rs-name' }, name), el('span', { class: 'rs-ic', 'aria-hidden': 'true' }, shelfIconEl(ic)));
+  const kids = [item('all', 'كل الكتب', S.books.length, 'thumbs'), ...S.shelves.map((x) => item(x.id, x.name, shelfBooks(x.id).length, shelfIcon(x)))];
   if (addingShelf) {
     const inp = el('input', { class: 'rs-input', placeholder: 'اسم الرف', 'aria-label': 'اسم الرف الجديد', enterkeyhint: 'done' });
     const done = () => { const v = inp.value.trim(); addingShelf = false; if (v) addShelf(v); else renderRailShelves(); };
@@ -1093,15 +1107,12 @@ function renderLibrary() {
           el('p', {}, want.length ? 'لا كتب تحمل كل هذه الوسوم معًا.' : shelf ? 'هذا الرف فارغ. أضف ملف PDF إليه، أو انقل كتابًا من قائمة ⋯ تحت غلافه.' : 'لا توجد كتب بعد.'),
           el('button', { class: 'btn primary', onclick: () => $('#fileIn').click() }, 'إضافة ملف PDF')),
     el('div', { class: 'drop-hint' }, 'اسحب ملفات PDF إلى هنا، أو اخترها من تطبيق «الملفات» على iPad عبر زر «إضافة ملف PDF».'),
-  ), royal ? el('footer', { class: 'lib-foot' },
-    el('div', { class: 'lf-brand' }, goldBook('lf-logo'), el('span', {}, 'المكتبة الرقمية … اكتشف، اقرأ، تعلّم')),
-    el('span', { class: 'lf-status', role: 'status' }, el('i'), el('span', {}, 'جاهز للاستخدام'))) : null);
+  ));
   const keep = main.querySelector('.view')?.scrollTop || 0;
   const focused = document.activeElement?.classList.contains('lib-search-in');
   main.replaceChildren(view); view.scrollTop = keep;
   view.classList.toggle('royal-view', royal);
   if (focused) { const si = view.querySelector('.lib-search-in'); si?.focus(); si?.setSelectionRange(si.value.length, si.value.length); }
-  updateLibStatus();
   // الرأس الكبير يُطوى عند التمرير؛ ويُحجز مكانه الأصلي حتى لا يقصر المحتوى فيقفز موضع التمرير
   const fullH = top.offsetHeight;
   const setStuck = (on) => {
@@ -1129,8 +1140,7 @@ function royalHeader(shelf, subText, onShelf) {
   return el('div', { class: 'lib-top royal-top' },
     el('div', { class: 'hero' }, art,
       el('div', { class: 'hero-main' },
-        el('div', { class: 'hero-brand' }, goldBook('hero-logo'),
-          el('div', {}, el('h1', {}, 'المكتبة الرقمية'), el('p', { class: 'hero-tag' }, 'معرفة بلا حدود… في متناول يدك'))),
+        el('div', { class: 'hero-brand' }, goldBook('hero-logo'), el('h1', { class: 'sr-only' }, shelf ? shelf.name : 'المكتبة')),
         el('label', { class: 'hero-search' }, search, icon('zoom'))),
       el('div', { class: 'hero-side' },
         el('div', { class: 'row' },
@@ -1150,6 +1160,10 @@ function customizePanel(shelf, themeKey) {
     const name = el('input', { class: 'input', value: shelf.name, 'aria-label': 'اسم الرف', id: 'shelfName' });
     name.addEventListener('change', () => { const v = name.value.trim(); if (v) { shelf.name = v; Store.put('shelves', shelf.id, shelf); renderLibrary(); } });
     panel.append(el('div', { class: 'cz-row' }, el('b', {}, 'اسم الرف'), name));
+    const cur = shelfIcon(shelf);
+    panel.append(el('div', { class: 'cz-row' }, el('b', {}, 'أيقونة الرف'),
+      el('div', { class: 'icon-pick', role: 'radiogroup', 'aria-label': 'أيقونة الرف' }, ...SHELF_ICONS.map(([k, l]) => el('button', { role: 'radio', 'aria-checked': String(cur === k), title: l, 'aria-label': l,
+        onclick: () => { shelf.icon = k; Store.put('shelves', shelf.id, shelf); renderLibrary(); } }, shelfIconEl(k))))));
   }
   panel.append(
     el('div', { class: 'cz-row' }, el('b', {}, shelf ? 'شكل هذا الرف' : 'شكل رف «كل الكتب»'),
@@ -3761,7 +3775,6 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.cla
     pg.strokes = ink || pg.strokes || [];
   })));
   if (settings) S.settings = { ...structuredClone(DEFAULTS), ...settings, pen: { ...DEFAULTS.pen, ...(settings.pen || {}) } };
-  $('#rail').append(goldBook('rail-orn')); // زخرفة أسفل الشريط في ثيم «المكتبة الرقمية»
   // الواجهة الجديدة تُعتمد مرة واحدة، ثم يبقى اختيار الثيم للقارئ
   if (!S.settings.royalAdopted) { S.settings.royalAdopted = true; S.settings.skin = 'royal'; if (!S.settings.allTheme || S.settings.allTheme === 'walnut') S.settings.allTheme = 'royal'; saveSettings(); }
   applySkin();
