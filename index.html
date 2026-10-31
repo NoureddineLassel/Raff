@@ -615,6 +615,23 @@ a.btn:not(.ghost) { background: var(--accent); border-color: var(--accent); colo
 .anno-item[data-color="pink"] { border-color: var(--ul-pink); }
 .anno-item[data-color="blue"] { border-color: var(--ul-blue); }
 .anno-item q { font-family: var(--font-read); font-size: 16px; display: block; quotes: none; line-height: 1.7; }
+/* قائمة الملاحظات تُمرَّر وحدها */
+.notes-items { overflow-y: auto; min-height: 0; padding: 0 8px 40px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; display: grid; gap: 4px; align-content: start; }
+.anno-item[aria-current="true"] { background: var(--accent-soft); }
+/* تفاصيل التظليل: النص الأصلي والترجمة والملاحظة كاملة */
+.anno-head { flex: 1; min-width: 0; display: grid; }
+.anno-head b { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.anno-detail { display: grid; gap: 22px; align-content: start; max-width: 820px; width: 100%; margin-inline: auto; -webkit-user-select: text; user-select: text; }
+.anno-detail section { display: grid; gap: 8px; }
+.ad-label { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; color: var(--muted); }
+.ad-label .icon-btn { width: 36px; height: 36px; }
+.ad-src { margin: 0; font-family: var(--font-read); font-size: 20px; line-height: 1.9; padding: 14px 18px; background: var(--surface); border-radius: 14px; border-inline-start: 5px solid var(--line); white-space: pre-wrap; -webkit-user-select: text; user-select: text; }
+.anno-detail[data-color="yellow"] .ad-src { border-inline-start-color: var(--ul-yellow); }
+.anno-detail[data-color="green"] .ad-src { border-inline-start-color: var(--ul-green); }
+.anno-detail[data-color="pink"] .ad-src { border-inline-start-color: var(--ul-pink); }
+.anno-detail[data-color="blue"] .ad-src { border-inline-start-color: var(--ul-blue); }
+.ad-trans { font-size: 17px; line-height: 1.8; padding: 14px 18px; background: var(--surface); border-radius: 14px; border-inline-start: 5px solid var(--accent); white-space: pre-wrap; -webkit-user-select: text; user-select: text; }
+.anno-note-in { width: 100%; min-height: 120px; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--surface); color: var(--ink); font: inherit; font-size: 16px; line-height: 1.7; resize: vertical; }
 .notes-editor { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; min-width: 0; }
 .editor-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .editor-bar .title-in { flex: 1 1 220px; font-size: 20px; font-weight: 600; border: 0; background: none; padding: 6px 0; min-width: 0; }

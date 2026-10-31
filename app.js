@@ -62,7 +62,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v23'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v24'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -2246,9 +2246,9 @@ function drawerItem(it, current) {
   } else {
     const g = it.g;
     body = el('div', { class: 'dr-body' },
-      el('q', { dir: isArabic(g.text) ? 'rtl' : 'ltr' }, g.text.length > 160 ? g.text.slice(0, 160) + '…' : g.text),
+      el('q', { dir: isArabic(g.text) ? 'rtl' : 'ltr' }, g.text),
       g.note ? el('span', { class: 'dr-note' }, '✎ ' + g.note) : null,
-      g.trans ? el('span', { class: 'dr-trans', dir: g.trans.to === 'ar' ? 'rtl' : 'ltr', lang: g.trans.to }, g.trans.text.length > 220 ? g.trans.text.slice(0, 220) + '…' : g.trans.text) : null,
+      g.trans ? el('span', { class: 'dr-trans', dir: g.trans.to === 'ar' ? 'rtl' : 'ltr', lang: g.trans.to }, g.trans.text) : null,
       meta(`${it.type === 'underline' ? 'تسطير' : 'تظليل'} ${COLOR_NAMES[g.color] || ''}${g.rects ? ' · على الصفحة' : ''}`));
   }
   const picking = R.picking, key = itemKey(it);
@@ -2941,7 +2941,7 @@ function renderNotes() {
     const groups = groupMarks().filter((g) => !q || (g.text + g.note + (g.trans?.text || '')).includes(q));
     groups.forEach((g) => {
       const b = S.books.find((x) => x.id === g.bookId);
-      list.append(el('button', { class: 'note-item anno-item', 'data-color': g.color, onclick: () => openReader(g.bookId, g.page, !g.rects) },
+      list.append(el('button', { class: 'note-item anno-item', 'data-color': g.color, 'aria-current': String(S.annoSel === g.group), onclick: () => { S.annoSel = g.group; renderNotes(); } },
         el('q', {}, g.text.length > 140 ? g.text.slice(0, 140) + '…' : g.text),
         g.note ? el('small', { style: 'white-space:normal;color:var(--ink)' }, '✎ ' + g.note) : null,
         g.trans ? el('small', { class: 'anno-trans', dir: g.trans.to === 'ar' ? 'rtl' : 'ltr', lang: g.trans.to }, g.trans.text.length > 260 ? g.trans.text.slice(0, 260) + '…' : g.trans.text) : null,
@@ -2957,8 +2957,10 @@ function renderNotes() {
     list);
   const note = S.notes.find((n) => n.id === S.noteId);
   const editor = el('section', { class: 'notes-editor' });
+  const anno = S.notesTab === 'annos' && groupMarks().find((g) => g.group === S.annoSel);
   if (note && S.notesTab === 'notebook') buildEditor(editor, note);
-  else editor.append(el('div', { class: 'empty' }, S.notesTab === 'annos' ? 'اختر تظليلًا لفتح الكتاب على صفحته.' : 'أنشئ ملاحظة جديدة لتكتب بلوحة المفاتيح أو بالقلم.'));
+  else if (anno) annoDetail(editor, anno);
+  else editor.append(el('div', { class: 'empty' }, S.notesTab === 'annos' ? 'اختر تظليلًا لتقرأ نصه كاملًا مع ترجمته وملاحظتك.' : 'أنشئ ملاحظة جديدة لتكتب بلوحة المفاتيح أو بالقلم.'));
   main.replaceChildren(el('div', { class: 'notes-layout' }, side, editor));
 }
 function groupMarks() {
@@ -2968,6 +2970,29 @@ function groupMarks() {
     const g = m.get(x.group); g.text = (g.text + ' ' + x.text).trim();
   }
   return [...m.values()];
+}
+/** التظليل كاملًا: النص الأصلي والترجمة والملاحظة، في جزء يُمرَّر، مع فتحه في الكتاب. */
+function annoDetail(host, g) {
+  const b = S.books.find((x) => x.id === g.bookId), ms = S.marks.filter((m) => m.group === g.group);
+  const copy = async (t, what) => { try { await navigator.clipboard.writeText(t); toast(`نُسخ ${what}.`); } catch { toast('تعذّر النسخ.'); } };
+  const ta = el('textarea', { class: 'anno-note-in', placeholder: 'اكتب ملاحظتك على هذا النص… (تُحفظ تلقائيًا)', 'aria-label': 'ملاحظتك', value: g.note || '' });
+  ta.addEventListener('input', () => {
+    for (const m of ms) { m.note = ta.value; saveLater('mark:' + m.id, () => Store.put('marks', m.id, m), 400); }
+    saveLater('annonote', () => changed('marks'), 800);
+  });
+  const dirOf = (t) => (isArabic(t) ? 'rtl' : 'ltr');
+  host.append(
+    el('div', { class: 'editor-bar' },
+      el('div', { class: 'anno-head' }, el('b', {}, b?.title || 'كتاب محذوف'), el('small', { class: 'muted' }, `صفحة ${g.page} · ${g.style === 'underline' ? 'تسطير' : 'تظليل'} ${COLOR_NAMES[g.color] || ''}`)),
+      b ? el('button', { class: 'btn primary', onclick: () => openReader(g.bookId, g.page, !g.rects) }, icon('back'), 'فتح في الكتاب') : null),
+    el('div', { class: 'editor-scroll anno-detail', 'data-color': g.color },
+      el('section', {},
+        el('div', { class: 'ad-label' }, el('span', {}, 'النص الأصلي'), el('button', { class: 'icon-btn', title: 'نسخ', 'aria-label': 'نسخ النص الأصلي', onclick: () => copy(g.text, 'النص الأصلي') }, icon('copy'))),
+        el('blockquote', { class: 'ad-src', dir: dirOf(g.text) }, g.text)),
+      g.trans ? el('section', {},
+        el('div', { class: 'ad-label' }, el('span', {}, `الترجمة · ${g.trans.engine}`), el('button', { class: 'icon-btn', title: 'نسخ', 'aria-label': 'نسخ الترجمة', onclick: () => copy(g.trans.text, 'الترجمة') }, icon('copy'))),
+        el('div', { class: 'ad-trans', dir: g.trans.to === 'ar' ? 'rtl' : 'ltr', lang: g.trans.to }, g.trans.text)) : null,
+      el('section', {}, el('div', { class: 'ad-label' }, el('span', {}, 'ملاحظتك')), ta)));
 }
 function buildEditor(host, note) {
   noteInks = []; activeInk = null;
