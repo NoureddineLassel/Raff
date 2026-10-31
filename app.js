@@ -63,7 +63,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v27'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v28'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1174,6 +1174,7 @@ const spreadPages = (start) => (R.mode === 'double' ? [start, start + 1] : [star
 
 async function openReader(id, page, withPanel) {
   closeMenu();
+  if (metaWin && (S.settings.metaMode || 'docked') !== 'float') metaWin.close(true); // النافذة المثبّتة تخص الشاشة التي فُتحت فيها
   const book = S.books.find((b) => b.id === id); if (!book) return;
   if (!(await Local.get('files', id))) toast('جارٍ تحميل الكتاب…');
   const buf = await loadBookFile(book);
@@ -1234,6 +1235,7 @@ async function repairMarkTexts(book) {
 }
 function closeReader() {
   hideSelBar();
+  if (metaWin && (S.settings.metaMode || 'docked') !== 'float') metaWin.close(true);
   readerEl.hidden = true; readerEl.replaceChildren();
   if (R.pdf) R.pdf.destroy();
   R.pdf = null; R.book = null; R.slots = []; R.activeInk = null;
@@ -2989,7 +2991,7 @@ async function copyNote(g, what) {
   const label = what === 'src' ? 'النص الأصلي' : what === 'trans' ? 'الترجمة' : 'النص الأصلي والترجمة';
   try { await navigator.clipboard.writeText(t); toast(`نُسخ ${label}.`); } catch { toast('تعذّر النسخ.'); }
 }
-let copyMenuEl = null;
+let copyMenuEl = null, metaWin = null;
 const closeCopyMenu = () => { copyMenuEl?.remove(); copyMenuEl = null; };
 document.addEventListener('pointerdown', (e) => { if (copyMenuEl && !copyMenuEl.contains(e.target) && !e.target.closest('.copy-btn')) closeCopyMenu(); }, true);
 /** زر النسخ في مربع الملاحظة: بلا ترجمة ينسخ النص مباشرة، ومعها يعرض قائمة الاختيار. */
@@ -3464,15 +3466,19 @@ function openMetaSheet(b) {
     try { const r = await zoteroConnect(); fillCols(r.collections); say(`متصل بمكتبة ${r.user} في Zotero.`, 'ok'); }
     catch (e) { say(`لم ينجح الاتصال: ${e.reason || 'خطأ غير متوقع'}.`, 'err'); }
   };
-  const sheet = el('div', { class: 'sheet-back', onclick: (e) => { if (e.target === sheet) close(); } },
-    el('div', { class: 'sheet', role: 'dialog', 'aria-label': 'بيانات الكتاب' },
-      el('div', { class: 'sheet-head' }, el('h2', {}, 'بيانات الكتاب'), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => close() }, icon('close'))),
+  const floating = (S.settings.metaMode || 'docked') === 'float';
+  const head = el('div', { class: 'sheet-head' }, el('h2', {}, 'بيانات الكتاب'),
+    el('button', { class: 'icon-btn', 'aria-label': floating ? 'تثبيت على يمين الشاشة' : 'فصل في نافذة مستقلة', title: floating ? 'تثبيت على يمين الشاشة' : 'فصل في نافذة مستقلة',
+      onclick: () => { S.settings.metaMode = floating ? 'docked' : 'float'; saveSettings(); close(true); openMetaSheet(b); } }, icon(floating ? 'pin' : 'float')),
+    el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: () => close() }, icon('close')));
+  const sheet = el('aside', { class: 'sheet meta-win', role: 'dialog', 'aria-label': 'بيانات الكتاب' },
+      head,
       el('div', { class: 'sheet-body' },
         el('div', { class: 'ms-auto' }, el('span', {}, 'يستخرج التطبيق البيانات من ملف PDF ومن رقم ISBN أو DOI في صفحاته الأولى، ويملأ الحقول الفارغة فقط.'),
           el('button', { class: 'btn', onclick: async (e) => {
             const btn = e.currentTarget; btn.disabled = true; say('جارٍ البحث في الكتاب…');
             try {
-              const r = await autofillMeta(b); close(); openMetaSheet(b);
+              const r = await autofillMeta(b); close(true); openMetaSheet(b);
               toast(r.found.length ? `مُلئت البيانات من: ${r.found.join('، ')}.` : r.isbn || r.doi ? `وُجد ${r.isbn ? 'ISBN ' + r.isbn : 'DOI'} لكن لم تُعثر على بياناته؛ أكملها يدويًا.` : 'لم يُعثر على ISBN أو DOI في الكتاب؛ أكمل البيانات يدويًا.');
             } catch { say('تعذّر الاستخراج الآن.', 'err'); btn.disabled = false; }
           } }, icon('zoom'), 'استخراج تلقائي')),
@@ -3497,11 +3503,45 @@ function openMetaSheet(b) {
           try { const r = await zoteroSend(b, withNotes.checked); say(`${r.updated ? 'حُدّث' : 'أُضيف'} الكتاب في Zotero${r.notes ? ' مع تظليلاته وملاحظاته' : ''}.`, 'ok'); }
           catch (err) { say(`لم يُرسل: ${err.reason || 'تعذّر الاتصال بـ Zotero'}.`, 'err'); }
           btn.disabled = false;
-        } }, 'إرسال إلى Zotero'))));
-  const close = () => { sheet.remove(); document.removeEventListener('keydown', onKey); if (S.view === 'library' && readerEl.hidden) renderLibrary(); };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+        } }, 'إرسال إلى Zotero')));
+  // مثبّتة على يمين الشاشة (تُفسح لها صفحات الكتاب مكانًا)، أو نافذة مستقلة تُسحب ويتغيّر حجمها
+  const inReader = !readerEl.hidden && R.els;
+  const close = (switching) => {
+    sheet.remove(); document.removeEventListener('keydown', onKey); metaWin = null;
+    R.els?.stage.classList.remove('meta-docked');
+    if (!switching && S.view === 'library' && readerEl.hidden) renderLibrary();
+  };
+  const onKey = (e) => { if (e.key === 'Escape' && !e.target.closest?.('input, textarea')) close(); };
   document.addEventListener('keydown', onKey);
-  document.body.append(sheet);
+  metaWin?.close(true);
+  metaWin = { close, book: b };
+  if (floating) {
+    sheet.classList.add('is-float');
+    const f = S.settings.metaRect || { x: 24, y: 80, w: 420, h: Math.min(680, innerHeight - 120) };
+    const w = Math.max(320, Math.min(innerWidth - 16, f.w)), h = Math.max(320, Math.min(innerHeight - 16, f.h));
+    sheet.style.cssText = `left:${Math.max(8, Math.min(innerWidth - w - 8, f.x))}px;top:${Math.max(8, Math.min(innerHeight - h - 8, f.y))}px;width:${w}px;height:${h}px`;
+    const saveRect = () => { const r = sheet.getBoundingClientRect(); if (r.width) { S.settings.metaRect = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; saveSettings(); } };
+    head.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button') || e.button > 0) return;
+      e.preventDefault();
+      const r = sheet.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY;
+      try { head.setPointerCapture(e.pointerId); } catch {}
+      const mv = (ev) => {
+        sheet.style.left = Math.max(8, Math.min(innerWidth - r.width - 8, r.left + ev.clientX - x0)) + 'px';
+        sheet.style.top = Math.max(8, Math.min(innerHeight - r.height - 8, r.top + ev.clientY - y0)) + 'px';
+      };
+      const up = () => { head.removeEventListener('pointermove', mv); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up); saveRect(); };
+      head.addEventListener('pointermove', mv); head.addEventListener('pointerup', up); head.addEventListener('pointercancel', up);
+    });
+    new ResizeObserver(debounce(() => { if (sheet.isConnected) saveRect(); }, 300)).observe(sheet);
+    document.body.append(sheet);
+  } else if (inReader) {
+    sheet.classList.add('is-docked');
+    R.els.body.append(sheet); R.els.stage.classList.add('meta-docked');
+  } else {
+    sheet.classList.add('is-docked', 'in-app');
+    document.body.append(sheet);
+  }
   if (S.settings.zoteroKey && S.settings.zoteroUser) zoteroConnect().then((r) => fillCols(r.collections)).catch(() => {});
 }
 
