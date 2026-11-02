@@ -73,7 +73,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v35'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v36'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -2272,7 +2272,7 @@ function setupDrag(E) {
     }
     if ((R.turning && !recovering) || e.button > 0 || e.pointerType === 'pen') return;
     if (R.pen && !(e.pointerType === 'touch' && S.settings.penOnly)) return;
-    if (e.target.closest('.pen-bar, .thumbs')) return;
+    if (e.target.closest('.pen-bar, .thumbs, .page-dock')) return;
     const sel = getSelection();
     // سحب الفأرة فوق النص، أو سحب مقابض التحديد، يحدّد النص ولا يقلب الصفحة؛
     // وحين تكون الصفحة أعرض من الشاشة يحرّكها الإصبع بدل أن يقلبها
