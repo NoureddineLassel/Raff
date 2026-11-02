@@ -447,6 +447,16 @@ main { min-width: 0; height: 100%; overflow: hidden; position: relative; }
 .find-layer i { position: absolute; background: rgb(255 200 60 / .55); border-radius: 3px; }
 .find-layer i.cur { background: rgb(255 140 0 / .6); box-shadow: 0 0 0 2px rgb(240 120 0 / .9); }
 @media (prefers-reduced-motion: reduce) { .stage .book-view, .stage .curl-canvas { transition: none; } }
+/* عدّاد الصفحات زر يفتح ضبط الترقيم: الرقم المطبوع واضح، وموضعه في الملف خافت */
+button.r-pageno { border: 0; background: none; font: inherit; font-size: 14px; color: var(--muted); border-radius: 10px; padding: 4px 8px; display: inline-flex; align-items: baseline; gap: 6px; direction: rtl; }
+button.r-pageno:hover, button.r-pageno[aria-expanded="true"] { background: var(--surface-2); }
+.r-pageno b { color: var(--ink); font-weight: 700; }
+.r-pageno small { font-size: 12px; direction: ltr; unicode-bidi: isolate; }
+.pnum-pop { width: min(320px, calc(100vw - 24px)); }
+.pnum-pop > small { font-size: 13px; line-height: 1.6; }
+.pn-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
+.pn-row .input { width: 96px; text-align: center; }
+.fd-jump .fd-pg .icon { width: 16px; height: 16px; }
 .size-pop .seg { width: 100%; }
 .size-pop .seg button { flex: 1; }
 .size-pop .sp-trim { justify-self: start; min-height: 38px; font-size: 14px; padding: 4px 14px; }

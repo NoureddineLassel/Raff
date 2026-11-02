@@ -73,7 +73,7 @@ const fmt = (n) => nf.format(Math.round(n));
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const later = new Map();
-const APP_VERSION = 'raff-v36'; // يطابق VERSION في sw.js
+const APP_VERSION = 'raff-v37'; // يطابق VERSION في sw.js
 // تشخيص القلم: يعرض على الشاشة ما يصل من أحداث Apple Pencil وما يحدث عند الثبات
 const inkDiag = { on: false, el: null, n: {}, last: '', hold: '', shape: '', log(k, v) {
   if (!this.on) return;
@@ -1312,7 +1312,7 @@ async function openReader(id, page, withPanel) {
   try { R.pdf = await pdfjsLib.getDocument({ data: buf }).promise; } catch { toast('تعذّر فتح الملف.'); return; }
   R.book = book; R.pen = false; R.thumbs = false; R.drawer = false; R.turning = false; R.panel = !!withPanel || R.panel; R.zoom = 1;
   if (sizePop) { sizePop.remove(); sizePop = null; }
-  comfortPop = null; findPop = null; R.find = null;
+  comfortPop = null; findPop = null; pnumPop = null; R.find = null;
   R.page = page || book.lastPage || 1;
   if (!book.dir) book.dir = await detectDir(R.pdf);
   book.lastOpened = Date.now(); saveBook(book);
@@ -1324,6 +1324,8 @@ async function openReader(id, page, withPanel) {
   await layout();
   afterPageChange();
   repairMarkTexts(book).catch((e) => console.warn('repair marks', e));
+  const pdf = R.pdf;
+  detectPageNumbers(book, pdf).then(() => { saveBook(book); if (R.book === book && R.pdf === pdf) afterPageNum(); }).catch((e) => console.warn('page numbers', e));
 }
 // ---------- Repairing highlights saved with reversed Arabic ligatures ----------
 // قبل تصحيح pdf.js كانت الحروف المركّبة (في، لا، على، تج…) تُحفظ مقلوبة. يُطابَق نص كل تظليل قديم
@@ -1364,7 +1366,7 @@ async function repairMarkTexts(book) {
 function closeReader() {
   hideSelBar();
   if (metaWin && (S.settings.metaMode || 'docked') !== 'float') metaWin.close(true);
-  readerEl.hidden = true; readerEl.replaceChildren(); comfortPop = null; findPop = null; R.find = null;
+  readerEl.hidden = true; readerEl.replaceChildren(); comfortPop = null; findPop = null; pnumPop = null; R.find = null;
   if (R.pdf) R.pdf.destroy();
   R.pdf = null; R.book = null; R.slots = []; R.activeInk = null;
   pageCache.clear(); textCache.clear();
@@ -1384,7 +1386,7 @@ function buildReader() {
   const b = R.book;
   R.els = {};
   const E = R.els;
-  E.pageNo = el('span', { class: 'r-pageno num', dir: 'ltr' });
+  E.pageNo = el('button', { class: 'r-pageno num', dir: 'ltr', title: 'ترقيم الصفحات', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', onclick: () => togglePnumPop() });
   E.modeBtn = el('button', { class: 'icon-btn', title: 'صفحة واحدة أو صفحتان', 'aria-label': 'عرض صفحتين', onclick: toggleMode }, icon('spread'));
   E.bmBtn = el('button', { class: 'icon-btn', title: 'علامة مرجعية', 'aria-label': 'علامة مرجعية', onclick: toggleBookmark }, icon('bookmark'));
   E.penBtn = el('button', { class: 'icon-btn', title: 'الكتابة بالقلم', 'aria-label': 'الكتابة بالقلم', onclick: () => setPen(!R.pen) }, icon('pen'));
@@ -1425,7 +1427,7 @@ function buildReader() {
     if (R.drawer && drawerMode() === 'auto' && !E.drawer.contains(e.target) && !E.drHandle.contains(e.target)) setDrawer(false);
   }, true);
   new ResizeObserver(debounce(() => { if (R.drawer && drawerMode() === 'float') saveFloatRect(); }, 300)).observe(E.drawer);
-  E.range = el('input', { type: 'range', min: 1, max: b.pages, value: 1, 'aria-label': 'الانتقال إلى صفحة', oninput: (e) => { E.pageNo.textContent = `${e.target.value} / ${b.pages}`; }, onchange: (e) => goto(+e.target.value, 0) });
+  E.range = el('input', { type: 'range', min: 1, max: b.pages, value: 1, 'aria-label': 'الانتقال إلى صفحة', oninput: (e) => { showPageNo([+e.target.value]); }, onchange: (e) => goto(+e.target.value, 0) });
   E.pct = el('span', { class: 'muted num', style: 'font-size:13px;white-space:nowrap' });
   const bottom = el('div', { class: 'r-bottom' }, E.range, E.pct);
   readerEl.replaceChildren(top, E.body, bottom);
@@ -1770,6 +1772,92 @@ function renderSizePop() {
 document.addEventListener('pointerdown', (e) => {
   if (sizePop && !sizePop.contains(e.target) && !R.els?.sizeBtn.contains(e.target)) { sizePop.remove(); sizePop = null; R.els?.sizeBtn.setAttribute('aria-pressed', 'false'); }
 }, true);
+// ---------- Printed page numbers ----------
+// رقم الصفحة المطبوع على الورق يختلف عن ترتيبها في الملف (الغلاف والمقدمات). المصادر بالترتيب:
+// تعديل القارئ يدويًا، ثم ترقيم الصفحات المحفوظ داخل ملف PDF، ثم رقم يُكتشف من رأس الصفحة أو ذيلها.
+const AR_DIGITS = { '٠': 0, '١': 1, '٢': 2, '٣': 3, '٤': 4, '٥': 5, '٦': 6, '٧': 7, '٨': 8, '٩': 9, '۰': 0, '۱': 1, '۲': 2, '۳': 3, '۴': 4, '۵': 5, '۶': 6, '۷': 7, '۸': 8, '۹': 9 };
+const toLatinDigits = (s) => String(s).replace(/[٠-٩۰-۹]/g, (d) => AR_DIGITS[d]);
+const ROMAN = [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']];
+const roman = (n) => ROMAN.reduce((s, [v, r]) => { while (n >= v) { s += r; n -= v; } return s; }, '');
+/** الرقم المطبوع لصفحة الملف n، أو null إن لم يُعرف ترقيم مختلف. */
+function pageLabel(b, n) {
+  const p = b?.pageNum; if (!p || !n) return null;
+  if (p.labels) return p.labels[n - 1] || null;
+  if (typeof p.offset === 'number') {
+    const v = n - p.offset;
+    if (v >= 1) return String(v);
+    return p.front === 'roman' ? roman(n) : null; // صفحات ما قبل المتن
+  }
+  return null;
+}
+/** نص رقم الصفحة للعرض: المطبوع إن عُرف، وإلا رقمها في الملف. */
+const pgText = (b, n) => pageLabel(b, n) ?? String(n);
+const pgRange = (b, pages) => { const a = pages.map((n) => pgText(b, n)); return a.length > 1 && /^\d+$/.test(a[0]) && /^\d+$/.test(a[1]) ? `${a[0]}–${a[1]}` : a.join('، '); };
+/** يقرأ ترقيم الملف، وإلا يكتشف الفرق بين ترتيب الصفحة ورقمها المطبوع من عيّنة من صفحات الكتاب. */
+async function detectPageNumbers(book, pdf) {
+  if (book.pageNum?.manual || book.pageNum?.v === 2) return false;
+  let labels = null;
+  try { labels = await pdf.getPageLabels(); } catch {}
+  if (labels && labels.some((l, i) => l && l !== String(i + 1))) {
+    book.pageNum = { v: 2, src: 'pdf', labels: labels.map((l, i) => l || String(i + 1)) };
+    return true;
+  }
+  const N = pdf.numPages, votes = new Map(); let sampled = 0;
+  const picks = [...new Set(Array.from({ length: 14 }, (_, i) => Math.round(N * (0.12 + (0.8 * i) / 13))))].filter((n) => n >= 1 && n <= N);
+  for (const n of picks) {
+    const page = await pdf.getPage(n).catch(() => null); if (!page) continue;
+    const tc = await page.getTextContent().catch(() => null); if (!tc?.items?.length) continue;
+    sampled++;
+    const H = page.getViewport({ scale: 1 }).height, seen = new Set();
+    for (const it of tc.items) {
+      const s = toLatinDigits((it.str || '').trim()).replace(/^[-–—\[(]\s*|\s*[-–—\])]$/g, '');
+      if (!/^\d{1,4}$/.test(s)) continue;
+      const y = it.transform[5];
+      if (y > H * 0.13 && y < H * 0.87) continue; // الرقم في رأس الصفحة أو ذيلها فقط
+      const off = n - +s;
+      if (off < 0 || off > 200 || seen.has(off)) continue;
+      seen.add(off); votes.set(off, (votes.get(off) || 0) + 1);
+    }
+  }
+  const [best, count] = [...votes].sort((a, b) => b[1] - a[1])[0] || [0, 0];
+  book.pageNum = count >= 3 && count >= sampled * 0.4 && best > 0 ? { v: 2, src: 'auto', offset: best } : { v: 2, src: 'none' };
+  return book.pageNum.src === 'auto';
+}
+let pnumPop = null;
+function closePnumPop() { pnumPop?.remove(); pnumPop = null; R.els?.pageNo?.setAttribute('aria-expanded', 'false'); }
+function togglePnumPop() {
+  if (pnumPop) return closePnumPop();
+  const b = R.book, n = R.page, p = b.pageNum || {};
+  const inp = el('input', { class: 'input num', type: 'text', inputmode: 'numeric', dir: 'ltr', value: pageLabel(b, n) ?? '', placeholder: String(n), 'aria-label': 'رقم هذه الصفحة في الكتاب المطبوع' });
+  const save = () => {
+    const v = +toLatinDigits(inp.value.trim());
+    if (!Number.isInteger(v) || v < 1) { toast('اكتب رقمًا صحيحًا كما هو مطبوع على الصفحة.'); return; }
+    b.pageNum = { v: 2, src: 'manual', manual: true, offset: n - v };
+    afterPageNum(); closePnumPop(); toast(`صارت هذه الصفحة رقم ${v}، وعُدّلت أرقام بقية الصفحات تبعًا لها.`);
+  };
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') closePnumPop(); });
+  const src = { pdf: 'الترقيم مأخوذ من ملف PDF نفسه.', auto: 'الترقيم مكتشَف تلقائيًا من أرقام الصفحات المطبوعة.', manual: 'الترقيم مضبوط يدويًا.' }[p.src] || 'لم يُعثر على ترقيم مطبوع؛ تظهر الصفحات بترتيبها في الملف.';
+  pnumPop = el('div', { class: 'dock-pop pnum-pop', role: 'dialog', 'aria-label': 'ترقيم الصفحات' },
+    el('div', { class: 'dp-head' }, el('b', {}, 'ترقيم الصفحات'), el('button', { class: 'icon-btn', 'aria-label': 'إغلاق', onclick: closePnumPop }, icon('close'))),
+    el('small', { class: 'muted' }, `هذه الصفحة رقم ${fmt(n)} من ${fmt(b.pages)} في الملف. ${src}`),
+    el('label', { class: 'pn-row' }, el('span', {}, 'رقمها المطبوع في الكتاب'), inp),
+    el('div', { class: 'dp-foot' },
+      p.src && p.src !== 'none' ? el('button', { class: 'btn ghost', onclick: () => { b.pageNum = { v: 2, src: 'none', manual: true }; afterPageNum(); closePnumPop(); toast('تظهر الصفحات الآن بترتيبها في الملف.'); } }, 'استعمال ترتيب الملف') : el('span'),
+      el('button', { class: 'btn primary', onclick: save }, 'حفظ')));
+  readerEl.append(pnumPop); R.els.pageNo.setAttribute('aria-expanded', 'true');
+  const r = R.els.pageNo.getBoundingClientRect();
+  pnumPop.style.top = Math.round(r.bottom + 8) + 'px';
+  pnumPop.style.left = Math.round(Math.max(12, Math.min(r.left + r.width / 2 - pnumPop.offsetWidth / 2, innerWidth - pnumPop.offsetWidth - 12))) + 'px';
+  inp.focus(); inp.select();
+}
+document.addEventListener('pointerdown', (e) => { if (pnumPop && !pnumPop.contains(e.target) && !R.els?.pageNo?.contains(e.target)) closePnumPop(); }, true);
+function afterPageNum() {
+  saveBook(R.book); updateChrome();
+  if (R.drawer) renderDrawer();
+  if (R.thumbs) buildThumbs();
+  if (R.find) renderFindPop();
+  changed('marks');
+}
 // ---------- Page dock: eye comfort and search, beside the page ----------
 // شريط صغير ملاصق لحافة الصفحة فيه زرّان: راحة العين، والبحث داخل الكتاب.
 const COMFORT_TONES = [['none', 'أصلي'], ['warm', 'دافئ'], ['sepia', 'ورقي'], ['gray', 'رمادي هادئ'], ['night', 'ليلي'], ['dusk', 'ليلي دافئ']];
@@ -1969,9 +2057,13 @@ function renderFindPop() {
     : 'لا نتائج. جرّب كلمة أقصر، أو شغّل التعرّف الضوئي إن كانت الصفحات مصوّرة.';
   f.prev.disabled = f.next.disabled = !n;
   const shown = F.hits.slice(0, 300);
-  f.list.replaceChildren(...[...shown.map((h, i) => el('li', {},
+  // كتابة رقم صفحة تعرض زر الانتقال إليها بالرقم المطبوع
+  const q = toLatinDigits(F.q.trim()).toLowerCase(), b = R.book;
+  let jump = null;
+  if (/^(\d{1,4}|[ivxlcdm]{1,7})$/.test(q)) { for (let k = 1; k <= b.pages && !jump; k++) if (pgText(b, k).toLowerCase() === q) jump = k; if (!jump && /^\d+$/.test(q) && +q >= 1 && +q <= b.pages && !b.pageNum?.offset && !b.pageNum?.labels) jump = +q; }
+  f.list.replaceChildren(...[jump ? el('li', {}, el('button', { class: 'fd-hit fd-jump', onclick: () => { goto(jump, 0); } }, el('span', { class: 'fd-pg num' }, icon('back')), el('span', {}, `الانتقال إلى الصفحة ${pgText(b, jump)}`, jump !== +q ? el('small', { class: 'muted' }, ` (${fmt(jump)} في الملف)`) : null))) : null, ...shown.map((h, i) => el('li', {},
     el('button', { class: 'fd-hit', 'aria-current': String(i === F.idx), onclick: () => showHit(i) },
-      el('span', { class: 'fd-pg num' }, `ص ${fmt(h.page)}`),
+      el('span', { class: 'fd-pg num' }, `ص ${pgText(R.book, h.page)}`),
       el('span', { class: 'fd-snip', dir: 'auto' }, h.before, el('mark', {}, h.match), h.after)))),
     n > shown.length ? el('li', { class: 'muted fd-more' }, `و${fmt(n - shown.length)} نتيجة أخرى. انتقل إليها بالسهمين.`) : null].filter(Boolean));
   f.list.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' });
@@ -2399,12 +2491,19 @@ function toggleBookmark() {
   const b = R.book; const i = b.bookmarks.indexOf(R.page);
   if (i >= 0) b.bookmarks.splice(i, 1); else b.bookmarks.push(R.page);
   saveBook(b); updateChrome(); if (R.drawer) renderDrawer();
-  toast(i >= 0 ? 'أُزيلت العلامة.' : `وُضعت علامة على الصفحة ${R.page}.`);
+  toast(i >= 0 ? 'أُزيلت العلامة.' : `وُضعت علامة على الصفحة ${pgText(R.book, R.page)}.`);
+}
+/** عدّاد الصفحات: الرقم المطبوع بخط واضح، وموضع الصفحة في الملف بخط خافت. */
+function showPageNo(pages) {
+  const E = R.els, b = R.book; if (!E) return;
+  const label = pages.map((n) => pageLabel(b, n));
+  if (label.some((l) => l != null)) E.pageNo.replaceChildren(el('b', {}, `ص ${pgRange(b, pages)}`), el('small', { dir: 'ltr' }, `${pages.join('–')} / ${b.pages}`));
+  else E.pageNo.replaceChildren(`${pages.join('–')} / ${b.pages}`);
 }
 function updateChrome() {
   const E = R.els, b = R.book; if (!E) return;
   const pages = spreadPages(R.page);
-  E.pageNo.textContent = `${pages.join('–')} / ${b.pages}`;
+  showPageNo(pages);
   E.range.value = R.page;
   E.pct.textContent = `قُرئ ${Math.round((b.seen.length / b.pages) * 100)}%`;
   E.bmBtn.setAttribute('aria-pressed', String(b.bookmarks.includes(R.page)));
@@ -2461,7 +2560,7 @@ function buildThumbs() {
   }), { root: E.thumbs });
   const pages = spreadPages(R.page);
   for (let n = 1; n <= b.pages; n++) {
-    const t = el('button', { 'data-page': n, 'aria-label': `الصفحة ${n}`, 'aria-current': String(pages.includes(n)), onclick: () => goto(n) },
+    const t = el('button', { 'data-page': n, 'aria-label': `الصفحة ${pgText(R.book, n)}`, 'aria-current': String(pages.includes(n)), onclick: () => goto(n) },
       el('img', { alt: '', src: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=', style: 'width:92px;height:130px' }),
       el('span', {}, b.bookmarks.includes(n) ? `◆ ${n}` : n));
     E.thumbs.append(t); io.observe(t);
@@ -2668,7 +2767,7 @@ function afterDelete() {
   changed('marks'); changed('ink');
 }
 function drawerItem(it, current) {
-  const meta = (t) => el('small', { class: 'dr-meta' }, `الصفحة ${it.page} · ${t}`);
+  const meta = (t) => el('small', { class: 'dr-meta' }, `الصفحة ${pgText(R.book, it.page)} · ${t}`);
   let body, thumb = null;
   if (it.type === 'bookmark') {
     body = el('div', { class: 'dr-body' }, el('b', {}, 'علامة مرجعية'), meta('اضغط للانتقال'));
@@ -2744,7 +2843,7 @@ function renderPanel(list) {
   const E = R.els, pages = list.map((x) => x.n);
   const missing = list.filter((x) => !x.rec).map((x) => x.n);
   const head = el('div', { class: 'panel-head' },
-    el('h2', {}, pages.length > 1 ? `نص الصفحتين ${pages.join('–')}` : `نص الصفحة ${pages[0]}`),
+    el('h2', {}, pages.length > 1 ? `نص الصفحتين ${pgRange(R.book, pages)}` : `نص الصفحة ${pgText(R.book, pages[0])}`),
     el('button', { class: 'icon-btn', title: 'تصغير الخط', 'aria-label': 'تصغير الخط', onclick: () => setReadSize(-2) }, el('span', { style: 'font-size:14px;font-weight:600' }, 'أ-')),
     el('button', { class: 'icon-btn', title: 'تكبير الخط', 'aria-label': 'تكبير الخط', onclick: () => setReadSize(2) }, el('span', { style: 'font-size:18px;font-weight:600' }, 'أ+')),
     missing.length < pages.length ? el('button', { class: 'icon-btn', title: 'نسخ النص', 'aria-label': 'نسخ النص المستخرج', onclick: () => copyPanelText(list) }, icon('copy')) : null,
@@ -2753,7 +2852,7 @@ function renderPanel(list) {
   E.progress = el('div', { class: 'progress', hidden: !R.ocrBusy }, el('span', {}, R.ocrStatus || ''), el('div', { class: 'bar' }, el('i', { style: `width:${(R.ocrPct || 0) * 100}%` })));
   const body = el('div', { class: 'ocr-text', id: 'ocrText', lang: 'ar', style: `--read-size:${S.settings.readSize}px` });
   for (const { n, rec } of list) {
-    const sec = el('section', { 'data-page': n }, pages.length > 1 ? el('h3', { class: 'pg-label' }, el('span', {}, `الصفحة ${n}`),
+    const sec = el('section', { 'data-page': n }, pages.length > 1 ? el('h3', { class: 'pg-label' }, el('span', {}, `الصفحة ${pgText(R.book, n)}`),
       rec?.paras.length ? el('button', { class: 'icon-btn copy-pg', title: `نسخ نص الصفحة ${n}`, 'aria-label': `نسخ نص الصفحة ${n}`, onclick: () => copyPanelText([{ n, rec }]) }, icon('copy')) : null) : null);
     if (rec) {
       rec.paras.forEach((t, i) => sec.append(paraEl(t, i, n)));
@@ -3388,7 +3487,7 @@ function renderNotes() {
         el('q', {}, g.text.length > 140 ? g.text.slice(0, 140) + '…' : g.text),
         g.note ? el('small', { style: 'white-space:normal;color:var(--ink)' }, '✎ ' + g.note) : null,
         g.trans ? el('small', { class: 'anno-trans', dir: g.trans.to === 'ar' ? 'rtl' : 'ltr', lang: g.trans.to }, g.trans.text.length > 260 ? g.trans.text.slice(0, 260) + '…' : g.trans.text) : null,
-        el('small', {}, `${b?.title || 'كتاب محذوف'} · صفحة ${g.page}${g.style === 'underline' ? ' · تسطير' : ''}${g.trans ? ` · ترجمة ${g.trans.engine}` : ''}`))));
+        el('small', {}, `${b?.title || 'كتاب محذوف'} · صفحة ${pgText(b, g.page)}${g.style === 'underline' ? ' · تسطير' : ''}${g.trans ? ` · ترجمة ${g.trans.engine}` : ''}`))));
     });
     if (!groups.length) list.append(el('p', { class: 'muted', style: 'padding:12px;line-height:1.8' }, 'ظلّل نصًا داخل أي كتاب وسيظهر هنا مع ملاحظاتك.'));
   }
@@ -3453,7 +3552,7 @@ function annoDetail(host, g) {
   const dirOf = (t) => (isArabic(t) ? 'rtl' : 'ltr');
   host.append(
     el('div', { class: 'editor-bar' },
-      el('div', { class: 'anno-head' }, el('b', {}, b?.title || 'كتاب محذوف'), el('small', { class: 'muted' }, `صفحة ${g.page} · ${g.style === 'underline' ? 'تسطير' : 'تظليل'} ${COLOR_NAMES[g.color] || ''}`)),
+      el('div', { class: 'anno-head' }, el('b', {}, b?.title || 'كتاب محذوف'), el('small', { class: 'muted' }, `صفحة ${pgText(b, g.page)} · ${g.style === 'underline' ? 'تسطير' : 'تظليل'} ${COLOR_NAMES[g.color] || ''}`)),
       g.trans ? el('button', { class: 'btn', onclick: () => copyNote(g, 'both') }, icon('copy'), 'نسخ النصين') : null,
       b ? el('button', { class: 'btn primary', onclick: () => openReader(g.bookId, g.page, !g.rects) }, icon('back'), 'فتح في الكتاب') : null),
     el('div', { class: 'editor-scroll anno-detail', 'data-color': g.color },
@@ -3808,7 +3907,7 @@ function zoteroNoteHtml(b) {
   if (!gs.length) return '';
   const rows = gs.map((g) => `<blockquote dir="${isArabic(g.text) ? 'rtl' : 'ltr'}">${esc(g.text)}</blockquote>`
     + (g.trans ? `<p dir="${g.trans.to === 'ar' ? 'rtl' : 'ltr'}"><i>${esc(g.trans.text)}</i></p>` : '')
-    + (g.note ? `<p>✎ ${esc(g.note)}</p>` : '') + `<p><small>(ص ${g.page})</small></p>`);
+    + (g.note ? `<p>✎ ${esc(g.note)}</p>` : '') + `<p><small>(ص ${esc(pgText(b, g.page))})</small></p>`);
   return `<h1>تظليلات وملاحظات «${esc(bookMeta(b).title || b.title)}» من رفّ</h1>` + rows.join('<hr/>');
 }
 async function zoteroFetch(path, opts = {}) {
